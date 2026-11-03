@@ -3,9 +3,10 @@
 
 const { $, $$, clamp } = SX;
 const toast = SX.toast;
-const PREVIEW_SIDE = 1600;   // the live preview is a copy no longer than this
-const MAX_SIDE = 6000;       // longest side of a photo we will open
-const MAX_PIXELS = 24e6;     // largest file we will create
+const PREVIEW_SIDE = 1600;     // the live preview is a copy no longer than this
+const SRC_MAX_SIDE = 6000;     // longest side of a photo we open
+const SRC_MAX_PIXELS = 24e6;   // largest photo we open
+const OUT_MAX_PIXELS = 36e6;   // largest file we create
 
 const PRESETS = {
   auto:     { fade: 60, dust: 40, noise: 35, sharp: 45, color: 15 },
@@ -17,21 +18,26 @@ const KEYS = ['fade', 'dust', 'noise', 'sharp', 'color'];
 
 const el = {
   intro: $('#r-intro'), drop: $('#r-drop'), file: $('#r-file'), sample: $('#r-sample'),
-  work: $('#r-work'), status: $('#r-status'), cmp: $('#r-cmp'),
-  before: $('#r-before'), after: $('#r-after'),
+  work: $('#r-work'), status: $('#r-status'), cmp: $('#r-cmp'), wait: $('#r-wait'),
+  before: $('#r-before'), after: $('#r-after'), faces: $('#r-faces'),
   presets: $('#r-presets'), size: $('#r-size'), download: $('#r-download'), again: $('#r-again'),
+  faceNote: $('#r-face-note'), faceMark: $('#r-face-mark'), faceClear: $('#r-face-clear'), steps: $('#r-steps'),
 };
 const sliders = {}, outs = {};
 KEYS.forEach((k) => { sliders[k] = $('#r-' + k); outs[k] = $('#r-' + k + 'Out'); });
 
 const S = {
   w: 0, h: 0, src: null, pw: 0, ph: 0, name: 'photo',
-  worker: null, ready: false, busy: false, queued: false, seq: 0, pid: 0, workerUrl: null,
-  exporting: false, maxScale: 1,
+  worker: null, ready: false, busy: false, queued: false, seq: 0, pid: 0,
+  exporting: false, maxScale: 1, loading: false,
+  faces: [],            // { cx, cy, rx, ry } as fractions of the photo's width and height
+  marking: false,
 };
 
-const scaleSeg = SX.seg($('#r-scale'), () => { updateSize(); });
+const scaleSeg = SX.seg($('#r-scale'), () => { updateSize(); SX.steps(el.steps, 2); });
 const fmtSeg = SX.seg($('#r-format'));
+const faceSeg = SX.seg($('#r-face'), () => { renderFaces(); updateFaceNote(); requestPreview(); });
+const cmp = SX.compare(el.cmp);
 
 /* ---------- worker ---------- */
 function makeWorker() {
@@ -54,91 +60,106 @@ async function decode(file) {
 }
 
 async function loadFile(file, opts) {
+  if (S.loading) return;
   if (!file || !/^image\//.test(file.type)) { toast('That file is not an image. Choose a JPG or PNG photo.', true); return; }
-  toast('Reading photo…');
-  await new Promise((r) => setTimeout(r, 30));
-  let bmp;
-  try { bmp = await decode(file); } catch (e) { toast("This photo couldn't be opened. Try a JPG or PNG.", true); return; }
-  const bw = bmp.width || bmp.naturalWidth, bh = bmp.height || bmp.naturalHeight;
-  let f = 1;
-  if (Math.max(bw, bh) > MAX_SIDE) f = MAX_SIDE / Math.max(bw, bh);
-  if (bw * bh * f * f > MAX_PIXELS) f = Math.min(f, Math.sqrt(MAX_PIXELS / (bw * bh)));
-  const W = Math.max(1, Math.round(bw * f)), H = Math.max(1, Math.round(bh * f));
-
-  const c = document.createElement('canvas'); c.width = W; c.height = H;
-  const cx = c.getContext('2d', { willReadFrequently: true });
-  cx.fillStyle = '#fff'; cx.fillRect(0, 0, W, H);   // transparent PNGs are flattened onto white
-  cx.imageSmoothingQuality = 'high';
-  cx.drawImage(bmp, 0, 0, W, H);
-  if (bmp.close) bmp.close();
-
-  const pf = Math.min(1, PREVIEW_SIDE / Math.max(W, H));
-  const pw = Math.max(1, Math.round(W * pf)), ph = Math.max(1, Math.round(H * pf));
-  const pc = document.createElement('canvas'); pc.width = pw; pc.height = ph;
-  const px = pc.getContext('2d', { willReadFrequently: true });
-  px.imageSmoothingQuality = 'high';
-  px.drawImage(c, 0, 0, pw, ph);
-  const pdata = px.getImageData(0, 0, pw, ph);
-
-  S.w = W; S.h = H; S.src = c; S.pw = pw; S.ph = ph;
-  S.name = (file.name || 'photo').replace(/\.[^.]+$/, '').replace(/[^\w\- ]+/g, '').trim().slice(0, 40) || 'photo';
-
-  for (const cv of [el.before, el.after]) { cv.width = pw; cv.height = ph; }
-  el.before.getContext('2d').drawImage(pc, 0, 0);
-  el.after.getContext('2d').drawImage(pc, 0, 0);
-  el.cmp.style.setProperty('--ar', String(pw / ph));
-  cmp.set(50);
-
-  const p = (opts && opts.preset) || 'auto';
-  applyPreset(p, true);
-  setScaleLimits();
-  scaleSeg.set('1');
-  updateSize();
-
-  killWorker(S.worker);
-  S.ready = false; S.busy = false; S.queued = false;
+  S.loading = true;
+  SX.dropBusy(el.drop, true);
+  SX.progress.start();
   try {
-    S.worker = makeWorker();
-  } catch (e) {
-    toast("This browser can't run the restore engine. Try a recent Chrome, Edge, Safari or Firefox.", true);
-    return;
-  }
-  S.worker.onmessage = onMessage;
-  S.worker.onerror = () => { S.busy = false; showStatus(false); toast('Something went wrong while restoring. Try a smaller photo.', true); };
-  const buf = pdata.data.buffer;
-  S.worker.postMessage({ type: 'init', w: pw, h: ph, data: buf }, [buf]);
+    await new Promise((r) => setTimeout(r, 30));
+    let bmp;
+    try { bmp = await decode(file); } catch (e) { toast("This photo couldn't be opened. Try a JPG or PNG.", true); return; }
+    const bw = bmp.width || bmp.naturalWidth, bh = bmp.height || bmp.naturalHeight;
+    let f = 1;
+    if (Math.max(bw, bh) > SRC_MAX_SIDE) f = SRC_MAX_SIDE / Math.max(bw, bh);
+    if (bw * bh * f * f > SRC_MAX_PIXELS) f = Math.min(f, Math.sqrt(SRC_MAX_PIXELS / (bw * bh)));
+    const W = Math.max(1, Math.round(bw * f)), H = Math.max(1, Math.round(bh * f));
 
-  SX.hideToast();
-  if (f < 1) toast('Large photo reduced to ' + W + ' × ' + H + ' px to fit in the browser.');
-  SX.swap(el.intro, el.work);
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const cx = c.getContext('2d', { willReadFrequently: true });
+    cx.fillStyle = '#fff'; cx.fillRect(0, 0, W, H);   // transparent PNGs are flattened onto white
+    cx.imageSmoothingQuality = 'high';
+    cx.drawImage(bmp, 0, 0, W, H);
+    if (bmp.close) bmp.close();
+
+    const pf = Math.min(1, PREVIEW_SIDE / Math.max(W, H));
+    const pw = Math.max(1, Math.round(W * pf)), ph = Math.max(1, Math.round(H * pf));
+    const pc = document.createElement('canvas'); pc.width = pw; pc.height = ph;
+    const px = pc.getContext('2d', { willReadFrequently: true });
+    px.imageSmoothingQuality = 'high';
+    px.drawImage(c, 0, 0, pw, ph);
+    const pdata = px.getImageData(0, 0, pw, ph);
+
+    S.w = W; S.h = H; S.src = c; S.pw = pw; S.ph = ph; S.pcanvas = pc;
+    S.name = (file.name || 'photo').replace(/\.[^.]+$/, '').replace(/[^\w\- ]+/g, '').trim().slice(0, 40) || 'photo';
+    S.faces = []; setMarking(false);
+
+    for (const cv of [el.before, el.after]) { cv.width = pw; cv.height = ph; }
+    el.before.getContext('2d').drawImage(pc, 0, 0);
+    el.after.getContext('2d').drawImage(pc, 0, 0);
+    el.cmp.style.setProperty('--ar', String(pw / ph));
+    cmp.set(50);
+
+    applyPreset((opts && opts.preset) || 'auto', true);
+    faceSeg.set('1');
+    renderFaces(); updateFaceNote();
+    setScaleLimits();
+    scaleSeg.set('1');
+    updateSize();
+
+    killWorker(S.worker);
+    S.ready = false; S.busy = false; S.queued = false;
+    try {
+      S.worker = makeWorker();
+    } catch (e) {
+      toast("This browser can't run the restore engine. Try a recent Chrome, Edge, Safari or Firefox.", true);
+      return;
+    }
+    S.worker.onmessage = onMessage;
+    S.worker.onerror = () => { S.busy = false; showStatus(false); toast('Something went wrong while restoring. Try a smaller photo.', true); };
+    const buf = pdata.data.buffer;
+    S.worker.postMessage({ type: 'init', w: pw, h: ph, data: buf }, [buf]);
+
+    SX.hideToast();
+    if (f < 1) toast('Large photo reduced to ' + W + ' × ' + H + ' px to fit in the browser.');
+    SX.steps(el.steps, 2);
+    await SX.swap(el.intro, el.work);
+  } finally {
+    S.loading = false;
+    SX.dropBusy(el.drop, false);
+    SX.progress.done();
+  }
 }
 
 /* ---------- live preview ---------- */
 let statusTimer = 0;
 function showStatus(on) {
   clearTimeout(statusTimer);
-  if (on) statusTimer = setTimeout(() => el.status.classList.add('on'), 220);
-  else el.status.classList.remove('on');
+  if (on) statusTimer = setTimeout(() => { el.status.classList.add('on'); el.wait.classList.add('on'); }, 220);
+  else { el.status.classList.remove('on'); el.wait.classList.remove('on'); }
 }
-function readParams() {
-  const p = { scale: +scaleSeg.value() || 1 };
+function faceList(W, H) {
+  return S.faces.map((f) => ({ cx: f.cx * W, cy: f.cy * H, rx: f.rx * W, ry: f.ry * H }));
+}
+function readParams(W, H) {
+  const p = { scale: +scaleSeg.value() || 1, faceMode: +faceSeg.value() || 0, faces: faceList(W, H) };
   KEYS.forEach((k) => { p[k] = +sliders[k].value; });
   return p;
 }
 function requestPreview() {
-  if (!S.ready) { S.queued = true; return; }
-  if (S.busy) { S.queued = true; return; }
+  if (!S.ready || S.busy) { S.queued = true; return; }
   runPreview();
 }
 function runPreview() {
   S.busy = true; S.queued = false; S.pid = ++S.seq;
   showStatus(true);
-  const p = readParams(); p.scale = 1;   // the preview shows the tonal and detail work, not the larger size
+  const p = readParams(S.pw, S.ph); p.scale = 1;   // the preview shows the tone and detail work, not the larger size
   S.worker.postMessage({ type: 'run', id: S.pid, params: p });
 }
 function onMessage(e) {
   const m = e.data;
-  if (m.type === 'ready') { S.ready = true; runPreview(); return; }
+  if (m.type === 'ready') { S.ready = true; runPreview(); findFaces(); return; }
+  if (m.type === 'faces') { setFaces(m.faces, m.w, m.h); return; }
   if (m.type === 'error') { S.busy = false; showStatus(false); toast('Something went wrong while restoring. Try a smaller photo.', true); return; }
   if (m.type !== 'done') return;
   if (m.id === S.pid) {
@@ -147,6 +168,106 @@ function onMessage(e) {
   S.busy = false;
   if (S.queued) runPreview(); else showStatus(false);
 }
+
+/* ---------- faces ---------- */
+async function findFaces() {
+  const pc = S.pcanvas;
+  if ('FaceDetector' in window) {
+    try {
+      const found = await new window.FaceDetector({ fastMode: false, maxDetectedFaces: 8 }).detect(pc);
+      if (found.length) {
+        setFaces(found.map((r) => {
+          const b = r.boundingBox;
+          return { cx: b.x + b.width / 2, cy: b.y + b.height / 2, rx: b.width * 0.62, ry: b.height * 0.72 };
+        }), S.pw, S.ph);
+        return;
+      }
+    } catch (_) { /* fall back to the built-in finder */ }
+  }
+  if (!S.worker || typeof FACE_MODEL === 'undefined') return;
+  S.worker.postMessage({ type: 'model', model: FACE_MODEL });
+  S.worker.postMessage({ type: 'detect', id: S.seq });
+}
+function setFaces(list, w, h) {
+  S.faces = list.map((f) => ({ cx: f.cx / w, cy: f.cy / h, rx: f.rx / w, ry: f.ry / h }));
+  renderFaces(); updateFaceNote();
+  if (S.faces.length && +faceSeg.value() > 0) requestPreview();
+}
+function renderFaces() {
+  el.faces.textContent = '';
+  const show = S.marking || +faceSeg.value() > 0;
+  el.faces.hidden = !show;
+  if (!show) return;
+  S.faces.forEach((f) => {
+    const d = document.createElement('div');
+    d.className = 'fz';
+    d.style.cssText = 'left:' + (f.cx - f.rx) * 100 + '%;top:' + (f.cy - f.ry) * 100 + '%;width:' + f.rx * 200 + '%;height:' + f.ry * 200 + '%';
+    el.faces.appendChild(d);
+  });
+  el.faceClear.hidden = S.faces.length === 0;
+}
+function updateFaceNote() {
+  const mode = +faceSeg.value(), n = S.faces.length;
+  let t;
+  if (mode === 0) t = 'Faces are processed like the rest of the photo.';
+  else if (!n) t = 'No faces found. If someone is in the photo, use Mark a face. Faces are never redrawn.';
+  else t = n + (n === 1 ? ' face area' : ' face areas') + ' protected. ' + (mode === 1
+    ? 'Gentle: lighter noise reduction and sharpening, no colour boost, and the eyes are left alone.'
+    : 'Strict: tone correction and resizing only.') + ' Wrong area? Choose Mark a face, then click it to remove it.';
+  el.faceNote.textContent = t;
+  el.faceClear.hidden = n === 0;
+}
+function setMarking(on) {
+  S.marking = on;
+  el.cmp.classList.toggle('marking', on);
+  el.faceMark.setAttribute('aria-pressed', String(on));
+  el.faceMark.textContent = on ? 'Done marking' : 'Mark a face';
+  if (on && +faceSeg.value() === 0) faceSeg.set('1');
+  renderFaces(); updateFaceNote();
+}
+el.faceMark.addEventListener('click', () => {
+  setMarking(!S.marking);
+  if (S.marking) toast('Drag a box around a face on the photo. Click a box to remove it.');
+});
+el.faceClear.addEventListener('click', () => { S.faces = []; renderFaces(); updateFaceNote(); requestPreview(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.marking) setMarking(false); });
+
+let drag = null, tmp = null;
+const norm = (e) => {
+  const r = el.cmp.getBoundingClientRect();
+  return { x: clamp((e.clientX - r.left) / r.width, 0, 1), y: clamp((e.clientY - r.top) / r.height, 0, 1) };
+};
+el.faces.addEventListener('pointerdown', (e) => {
+  if (!S.marking) return;
+  e.preventDefault();
+  try { el.faces.setPointerCapture(e.pointerId); } catch (_) {}
+  const p = norm(e);
+  drag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y, moved: false };
+});
+el.faces.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  const p = norm(e);
+  drag.x1 = p.x; drag.y1 = p.y;
+  if (Math.abs(drag.x1 - drag.x0) > 0.012 || Math.abs(drag.y1 - drag.y0) > 0.012) drag.moved = true;
+  if (!drag.moved) return;
+  if (!tmp) { tmp = document.createElement('div'); tmp.className = 'fz temp'; el.faces.appendChild(tmp); }
+  tmp.style.cssText = 'left:' + Math.min(drag.x0, drag.x1) * 100 + '%;top:' + Math.min(drag.y0, drag.y1) * 100 + '%;width:' + Math.abs(drag.x1 - drag.x0) * 100 + '%;height:' + Math.abs(drag.y1 - drag.y0) * 100 + '%';
+});
+el.faces.addEventListener('pointerup', () => {
+  if (!drag) return;
+  const d = drag; drag = null;
+  if (tmp) { tmp.remove(); tmp = null; }
+  if (d.moved) {
+    const w = Math.abs(d.x1 - d.x0), h = Math.abs(d.y1 - d.y0);
+    if (w < 0.03 || h < 0.03) return;
+    S.faces.push({ cx: (d.x0 + d.x1) / 2, cy: (d.y0 + d.y1) / 2, rx: w / 2, ry: h / 2 });
+  } else {
+    const i = S.faces.findIndex((f) => ((d.x0 - f.cx) / f.rx) ** 2 + ((d.y0 - f.cy) / f.ry) ** 2 <= 1);
+    if (i < 0) return;
+    S.faces.splice(i, 1);
+  }
+  renderFaces(); updateFaceNote(); requestPreview();
+});
 
 /* ---------- controls ---------- */
 function syncOutputs() { KEYS.forEach((k) => { outs[k].textContent = sliders[k].value; }); }
@@ -160,40 +281,39 @@ function applyPreset(name, silent) {
   if (!silent) requestPreview();
 }
 KEYS.forEach((k) => {
-  sliders[k].addEventListener('input', () => { outs[k].textContent = sliders[k].value; setPressed(null); requestPreview(); });
+  sliders[k].addEventListener('input', () => { outs[k].textContent = sliders[k].value; setPressed(null); SX.steps(el.steps, 2); requestPreview(); });
 });
-$$('button', el.presets).forEach((b) => b.addEventListener('click', () => applyPreset(b.dataset.preset)));
+$$('button', el.presets).forEach((b) => b.addEventListener('click', () => { applyPreset(b.dataset.preset); SX.steps(el.steps, 2); }));
 
 function setScaleLimits() {
-  S.maxScale = Math.sqrt(MAX_PIXELS / (S.w * S.h));
+  S.maxScale = Math.sqrt(OUT_MAX_PIXELS / (S.w * S.h));
   scaleSeg.buttons.forEach((b) => {
     const off = +b.dataset.v > S.maxScale + 1e-6;
-    if (off) { b.setAttribute('aria-disabled', 'true'); b.title = 'Over the ' + (MAX_PIXELS / 1e6) + ' megapixel limit for this photo'; }
+    if (off) { b.setAttribute('aria-disabled', 'true'); b.title = 'Over the ' + (OUT_MAX_PIXELS / 1e6) + ' megapixel limit for this photo'; }
     else { b.removeAttribute('aria-disabled'); b.removeAttribute('title'); }
   });
 }
 function updateSize() {
   const s = +scaleSeg.value() || 1;
   const ow = Math.round(S.w * s), oh = Math.round(S.h * s);
-  el.size.textContent = ow + ' × ' + oh + ' px · ' + (ow * oh / 1e6).toFixed(1) + ' MP' + (S.maxScale < 4 ? '. Larger sizes are capped at ' + (MAX_PIXELS / 1e6) + ' MP.' : '');
+  el.size.textContent = ow + ' × ' + oh + ' px · ' + (ow * oh / 1e6).toFixed(1) + ' MP' + (S.maxScale < 8 ? '. Larger sizes are capped at ' + (OUT_MAX_PIXELS / 1e6) + ' MP.' : '');
 }
-
-const cmp = SX.compare(el.cmp);
 
 /* ---------- download at full size ---------- */
 el.download.addEventListener('click', async () => {
   if (S.exporting || !S.src) return;
   S.exporting = true;
   SX.busy(el.download, true, 'Preparing photo');
+  SX.progress.start();
   let worker = null;
   try {
     const id = S.src.getContext('2d').getImageData(0, 0, S.w, S.h);
-    const params = readParams();
+    const params = readParams(S.w, S.h);
     worker = makeWorker();
     const result = await new Promise((resolve, reject) => {
       worker.onmessage = (e) => {
         const m = e.data;
-        if (m.type === 'progress') SX.busy(el.download, true, 'Processing ' + Math.round(m.p * 100) + '%');
+        if (m.type === 'progress') { SX.busy(el.download, true, 'Processing ' + Math.round(m.p * 100) + '%'); SX.progress.set(m.p); }
         else if (m.type === 'done') resolve(m);
         else if (m.type === 'error') reject(new Error(m.message));
       };
@@ -210,13 +330,14 @@ el.download.addEventListener('click', async () => {
     if (!blob) throw new Error('encode');
     SX.busy(el.download, false);
     const ok = await SX.saveBlob(blob, S.name + '-restored.' + (jpg ? 'jpg' : 'png'));
-    if (ok) SX.flash(el.download, 'Downloaded');
+    if (ok) { SX.flash(el.download, 'Downloaded'); SX.steps(el.steps, 3); }
   } catch (err) {
     killWorker(worker);
     SX.busy(el.download, false);
     toast("Couldn't process the photo at this size. Try a smaller size setting.", true);
   } finally {
     S.exporting = false;
+    SX.progress.done();
   }
 });
 
@@ -229,11 +350,14 @@ el.sample.addEventListener('click', async () => {
 SX.tools.restore = { load: loadFile, over: (v) => el.drop.classList.toggle('over', v) };
 
 el.again.addEventListener('click', async () => {
+  setMarking(false);
   await SX.swap(el.work, el.intro);
   killWorker(S.worker); S.worker = null; S.ready = false; S.busy = false; S.queued = false;
-  S.src = null;
+  S.src = null; S.faces = [];
   showStatus(false);
+  SX.steps(el.steps, 1);
 });
 
 syncOutputs();
+updateFaceNote();
 })();

@@ -11,7 +11,7 @@ const el = {
   intro: $('#intro'), drop: $('#drop'), file: $('#file'), work: $('#work'),
   srcWrap: $('#srcWrap'), srcImg: $('#srcImg'), sel: $('#sel'), clearSel: $('#clearSel'),
   out: $('#out'), outView: $('#outView'), empty: $('#empty'), undo: $('#undoErase'),
-  download: $('#download'), copy: $('#copy'), again: $('#again'), sample: $('#sigSample'),
+  download: $('#download'), copy: $('#copy'), again: $('#again'), sample: $('#sigSample'), steps: $('#s-steps'),
   sens: $('#sens'), soft: $('#soft'), specks: $('#specks'), pad: $('#pad'), thick: $('#thick'), thickOut: $('#thickOut'),
   sensOut: $('#sensOut'), softOut: $('#softOut'), specksOut: $('#specksOut'), padOut: $('#padOut'),
   customColor: $('#customColor'), customChip: $('#customChip'), origDot: $('#origDot'),
@@ -29,7 +29,18 @@ async function loadFile(file) {
     toast('That file is not an image. Choose a JPG or PNG photo.', true);
     return;
   }
-  toast('Reading photo…');
+  if (S.loading) return;
+  S.loading = true;
+  SX.dropBusy(el.drop, true);
+  SX.progress.start();
+  try { await loadPhoto(file); } finally {
+    S.loading = false;
+    SX.dropBusy(el.drop, false);
+    SX.progress.done();
+  }
+}
+
+async function loadPhoto(file) {
   await new Promise((r) => setTimeout(r, 30));
   const url = URL.createObjectURL(file);
   const img = new Image();
@@ -68,7 +79,8 @@ async function loadFile(file) {
   el.sel.hidden = true; el.clearSel.hidden = true; el.undo.hidden = true;
   render();
   SX.hideToast();
-  SX.swap(el.intro, el.work);
+  SX.steps(el.steps, 2);
+  await SX.swap(el.intro, el.work);
 }
 
 /* Darkness map: how much darker each pixel is than the paper around it.
@@ -546,7 +558,7 @@ el.download.addEventListener('click', async () => {
     const blob = await exportBlob();
     SX.busy(el.download, false);
     const ok = await SX.saveBlob(blob, filename);
-    if (ok) SX.flash(el.download, 'Downloaded');
+    if (ok) { SX.flash(el.download, 'Downloaded'); SX.steps(el.steps, 3); }
   } catch (e) {
     SX.busy(el.download, false);
     toast("Couldn't create the PNG. Try again.", true);
@@ -573,6 +585,7 @@ el.sample.addEventListener('click', async () => {
 SX.tools.signature = { load: loadFile, over: (v) => el.drop.classList.toggle('over', v) };
 
 el.again.addEventListener('click', async () => {
+  SX.steps(el.steps, 1);
   await SX.swap(el.work, el.intro);
   S.d = null; S.rgba = null; S.last = null; S.sel = null; S.seeds = [];
   if (S.url) { URL.revokeObjectURL(S.url); S.url = null; }

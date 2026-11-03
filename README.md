@@ -3,7 +3,7 @@
 Two small tools that run entirely in your browser. Photos are never uploaded anywhere, and there is no account.
 
 - **Extract signature** turns a photo of your handwritten signature into a transparent PNG.
-- **Restore photo** cleans up an old or low-quality photo: faded colour, dust, scratches, noise and softness, with optional 2× or 4× upscaling.
+- **Restore photo** cleans up an old or low-quality photo: faded colour, dust, scratches, noise and softness, with optional 2×, 4× or 8× enlarging. Faces are detected and processed more gently, and never redrawn.
 
 Open `index.html` through any static host (GitHub Pages works), or run `python3 -m http.server` in this folder and visit `http://localhost:8000`. The sample photos need a web server to load; choosing your own photo also works when you open the file directly.
 
@@ -31,10 +31,22 @@ Steps, in order:
 2. **Dust and scratches**: pixels that stand out from three or more neighbours on a ring around them (specks and thin lines, not edges) are repaired from nearby clean pixels.
 3. **Noise**: a bilateral filter guided by brightness, so edges stay where they are.
 4. **Colour boost**: raises muted colours more than strong ones.
-5. **Upscale**: Lanczos-3 resampling to 2× or 4×, capped at 24 megapixels.
+5. **Enlarge**: Lanczos-3 resampling to 2×, 4× or 8×, done in 2× steps. After each step a soft edge-steepening filter keeps edges from turning into blur, and noise reduction rises a little with the size. This makes edges cleaner and the file bigger. It does not add detail the camera never recorded.
 6. **Sharpen**: unsharp mask on brightness only, with a small dead zone so noise is not boosted.
 
-Photos larger than 6000 px on the long side, or 24 megapixels, are reduced when opened. High dust and noise settings can soften fine texture.
+Photos larger than 6000 px on the long side, or 24 megapixels, are reduced when opened. The saved file can be up to 36 megapixels, so 8× is only offered for small photos (up to about 0.56 megapixels) and 4× up to about 2.25 megapixels. High dust and noise settings can soften fine texture.
+
+### Face protection
+
+Faces are found on your device, using the browser's built-in face detector when it has one and otherwise a small bundled cascade. Each face area is processed on its own with gentler settings and blended back with a soft edge, so there is no visible seam.
+
+- **Off**: faces are treated like the rest of the photo.
+- **Gentle** (default): lighter noise reduction and sharpening, less speck repair, no colour boost, and the eye region is left out of speck repair so catchlights and pupils stay.
+- **Strict**: tone correction and resizing only.
+
+Nothing is redrawn or generated. The bundled finder works best on faces that look at the camera, and it can also fire on animal faces or face-like patterns. Use **Mark a face** to draw a box around one it missed, and click a box in marking mode to remove it.
+
+The bundled detector in `js/facemodel.js` is OpenCV's `lbpcascade_frontalface` (OpenCV is licensed under Apache 2.0, and BSD 3-clause in older releases), converted to a compact JavaScript object.
 
 ## Files
 
@@ -42,6 +54,7 @@ Photos larger than 6000 px on the long side, or 24 megapixels, are reduced when 
 - `css/app.css`, `js/app.js`: shared styles, routing and helpers
 - `js/signature.js`: signature extraction
 - `js/engine.js`, `js/restore.js`: the restore engine and its page
-- `assets/`: sample photos
+- `js/facemodel.js`: the face-finder model data
+- `assets/`: sample photos and the stage images shown on the landing page
 
 No dependencies and no build step.

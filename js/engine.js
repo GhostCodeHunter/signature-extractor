@@ -59,7 +59,7 @@ function restoreEngineWorker() {
 
   /* 2. Dust and scratches: a pixel that stands out from three or more of its eight neighbours
         on a ring around it (a speck or a thin line, not an edge) is repaired from nearby clean pixels. */
-  function removeDust(d, w, h, s, rW) {
+  function removeDust(d, w, h, s, rW, skip) {
     var n = w * h, Y = lumaPlane(d, n);
     var dd = rW + 1;
     var mask = new Uint8Array(n);
@@ -72,6 +72,7 @@ function restoreEngineWorker() {
         var ru = yu * w, rm = y * w, rd = yd * w;
         for (var x = 0; x < w; x++) {
           var xl = x - dd < 0 ? 0 : x - dd, xr = x + dd >= w ? w - 1 : x + dd;
+          if (skip && x >= skip[0] && x <= skip[2] && y >= skip[1] && y <= skip[3]) continue;
           var v = Y[rm + x];
           ring[0] = Y[ru + xl]; ring[1] = Y[ru + x]; ring[2] = Y[ru + xr];
           ring[3] = Y[rm + xl]; ring[4] = Y[rm + xr];
@@ -271,39 +272,237 @@ function restoreEngineWorker() {
     }
   }
 
+  /* 7. Edge steepening after each 2x step: a gentle shock filter. Edges that interpolation
+        spread out are pulled back toward the darker or lighter side, so they look crisp
+        without the halos an unsharp mask adds. Flat areas and noise are left alone. */
+  function shock(d, w, h, strength, r) {
+    var n = w * h, Y = lumaPlane(d, n);
+    var B = boxBlur(boxBlur(Y, w, h, r), w, h, r);
+    var k = 0.6 * strength, rr = r * r, w2 = w * r;
+    for (var y = r; y < h - r; y++) {
+      for (var x = r; x < w - r; x++) {
+        var i = y * w + x;
+        var gx = (B[i + r] - B[i - r]) / (2 * r), gy = (B[i + w2] - B[i - w2]) / (2 * r);
+        var mag = Math.sqrt(gx * gx + gy * gy);
+        if (mag < 2) continue;
+        var lap = (B[i + r] + B[i - r] + B[i + w2] + B[i - w2] - 4 * B[i]) / rr;
+        var t = lap / 2; t = t / (1 + (t < 0 ? -t : t));       // soft sign: no hard flips on flat ramps
+        var ramp = (mag - 2) / 6; if (ramp > 1) ramp = 1;
+        if (mag > 28) mag = 28;
+        var dl = -k * mag * t * ramp;
+        var j = i * 4;
+        d[j] += dl; d[j + 1] += dl; d[j + 2] += dl;
+      }
+    }
+  }
+
+  /* All the detail stages for one block of pixels. Used for the whole photo, and again
+     with gentler settings for each protected face. */
+  function enhance(d, w, h, p, progress) {
+    var st = { d: d, w: w, h: h }, info = {};
+    var scale = p.scale > 1 ? p.scale : 1;
+    var ups = scale > 1 ? Math.round(Math.log(scale) / Math.LN2) : 0;
+    var noise = Math.min(100, p.noise + (ups && p.bump !== false ? 8 * ups : 0));
+    var ls0 = p.refLong || Math.max(w, h);
+    var plan = [];
+    if (p.dust > 0) plan.push(['dust', 3]);
+    if (noise > 0) plan.push(['noise', 8]);
+    if (p.color > 0) plan.push(['color', 1]);
+    for (var k = 1; k <= ups; k++) plan.push(['up', Math.pow(4, k) * 1.5, k]);
+    if (p.sharp > 0) plan.push(['sharp', 1.5 * scale * scale]);
+    var tot = 0, done = 0;
+    plan.forEach(function (x) { tot += x[1]; });
+    var report = function (f) { if (progress) progress(Math.min(1, (done + f) / tot)); };
+    for (var si = 0; si < plan.length; si++) {
+      var nm = plan[si][0], wt = plan[si][1];
+      var lsNow = ls0 * (st.w / w);
+      if (nm === 'dust') {
+        info.dust = removeDust(st.d, st.w, st.h, p.dust / 100, clamp(Math.round(lsNow / 800), 2, 6), p.dustSkip);
+      } else if (nm === 'noise') {
+        st.d = denoise(st.d, st.w, st.h, noise / 100, lsNow, function (f) { report(f * wt); });
+      } else if (nm === 'color') {
+        vibrance(st.d, st.w * st.h, p.color / 100);
+      } else if (nm === 'up') {
+        var nw = st.w * 2, nh = st.h * 2;
+        st.d = upscale(st.d, st.w, st.h, nw, nh, function (f) { report(f * wt); });
+        st.w = nw; st.h = nh;
+        if (p.sharp > 0 && p.shock !== false) shock(st.d, st.w, st.h, (p.sharp / 100) * 0.9, Math.pow(2, plan[si][2] - 1));
+      } else if (nm === 'sharp') {
+        sharpen(st.d, st.w, st.h, (p.sharp / 100) * 2.2 * (1 + 0.2 * ups), ls0 * (st.w / w));
+      }
+      done += wt; report(0);
+    }
+    st.info = info;
+    return st;
+  }
+
+  /* Face protection. A face is an ellipse { cx, cy, rx, ry } in pixels of the image being
+     processed. Inside it the result of a gentler pass is blended over the normal one. */
+  function smooth(a, b, x) { var t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); }
+
+  function faceCrop(d, w, h, f) {
+    var pad = Math.max(6, Math.round(0.08 * Math.max(f.rx, f.ry)));
+    var x0 = Math.max(0, Math.floor(f.cx - 1.25 * f.rx) - pad), x1 = Math.min(w, Math.ceil(f.cx + 1.25 * f.rx) + pad);
+    var y0 = Math.max(0, Math.floor(f.cy - 1.25 * f.ry) - pad), y1 = Math.min(h, Math.ceil(f.cy + 1.25 * f.ry) + pad);
+    var cw = x1 - x0, ch = y1 - y0;
+    if (cw < 8 || ch < 8) return null;
+    var data = new Uint8ClampedArray(cw * ch * 4);
+    for (var y = 0; y < ch; y++) data.set(d.subarray(((y0 + y) * w + x0) * 4, ((y0 + y) * w + x1) * 4), y * cw * 4);
+    // specks are not repaired around the eyes, where bright catchlights are part of the face
+    var bw = f.rx / 0.62, bh = f.ry / 0.72, top = f.cy - bh / 2;
+    var skip = [f.cx - bw * 0.55 - x0, top + 0.18 * bh - y0, f.cx + bw * 0.55 - x0, top + 0.55 * bh - y0];
+    return { x0: x0, y0: y0, cw: cw, ch: ch, data: data, skip: skip };
+  }
+
+  function blendFace(out, ow, oh, B, bw, bh, crop, s, f) {
+    var ox = crop.x0 * s, oy = crop.y0 * s;
+    var ccx = f.cx * s, ccy = f.cy * s, rx = f.rx * s, ry = f.ry * s;
+    for (var y = 0; y < bh; y++) {
+      var gy = oy + y; if (gy >= oh) break;
+      var ny = (gy + 0.5 - ccy) / ry, ny2 = ny * ny;
+      if (ny2 > 1.6) continue;
+      for (var x = 0; x < bw; x++) {
+        var gx = ox + x; if (gx >= ow) break;
+        var nx = (gx + 0.5 - ccx) / rx;
+        var dd = Math.sqrt(nx * nx + ny2);
+        if (dd >= 1.25) continue;
+        var wgt = 1 - smooth(0.9, 1.25, dd);
+        if (wgt <= 0) continue;
+        var a = (gy * ow + gx) * 4, b = (y * bw + x) * 4;
+        out[a] += (B[b] - out[a]) * wgt;
+        out[a + 1] += (B[b + 1] - out[a + 1]) * wgt;
+        out[a + 2] += (B[b + 2] - out[a + 2]) * wgt;
+      }
+    }
+  }
+
   /* the whole pipeline, in the order that gives the cleanest result */
   function run(src, w, h, p, progress, own) {
     var d = own ? src : new Uint8ClampedArray(src);
-    var n = w * h, ls = Math.max(w, h), info = {};
-    var tot = 0, done = 0, report = function (f) { if (progress) progress(Math.min(1, (done + f) / tot)); };
-    var steps = [];
-    if (p.fade > 0) steps.push(['levels', 1]);
-    if (p.dust > 0) steps.push(['dust', 3]);
-    if (p.noise > 0) steps.push(['noise', 8]);
-    if (p.color > 0) steps.push(['color', 1]);
-    var scale = p.scale > 1 ? p.scale : 1;
-    if (scale > 1) steps.push(['upscale', 4 * scale]);
-    if (p.sharp > 0) steps.push(['sharp', 2 * scale * scale]);
-    steps.forEach(function (s) { tot += s[1]; });
-    function end(wt) { done += wt; report(0); }
-    for (var si = 0; si < steps.length; si++) {
-      var nm = steps[si][0], wt = steps[si][1];
-      if (nm === 'levels') { info.levels = autoLevels(d, n, p.fade / 100); }
-      else if (nm === 'dust') { info.dust = removeDust(d, w, h, p.dust / 100, clamp(Math.round(ls / 800), 2, 6)); }
-      else if (nm === 'noise') { d = denoise(d, w, h, p.noise / 100, ls, function (f) { report(f * wt); }); }
-      else if (nm === 'color') { vibrance(d, n, p.color / 100); }
-      else if (nm === 'upscale') {
-        var nw = Math.round(w * scale), nh = Math.round(h * scale);
-        d = upscale(d, w, h, nw, nh, function (f) { report(f * wt); });
-        w = nw; h = nh; n = w * h; ls = Math.max(w, h);
+    var n = w * h, info = {};
+    var faces = p.faceMode > 0 && p.faces && p.faces.length ? p.faces : [];
+    var crops = [];
+    if (p.fade > 0) info.levels = autoLevels(d, n, p.fade / 100);
+    if (progress) progress(0.02);
+    for (var i = 0; i < faces.length; i++) crops.push(faceCrop(d, w, h, faces[i]));
+    var main = enhance(d, w, h, p, progress ? function (f) { progress(0.02 + 0.9 * f); } : null);
+    info.dust = main.info.dust;
+    var s = main.w / w;
+    if (crops.length) {
+      var fp = {
+        dust: p.faceMode === 2 ? 0 : p.dust * 0.6, color: 0, scale: p.scale, refLong: Math.max(w, h), fade: 0,
+        noise: p.faceMode === 2 ? 0 : p.noise * 0.4,
+        sharp: p.faceMode === 2 ? 0 : p.sharp * 0.5,
+        bump: p.faceMode !== 2,
+        shock: p.faceMode !== 2
+      };
+      var done = 0;
+      for (var c = 0; c < crops.length; c++) {
+        if (!crops[c]) continue;
+        fp.dustSkip = crops[c].skip;
+        var B = enhance(crops[c].data, crops[c].cw, crops[c].ch, fp, null);
+        blendFace(main.d, main.w, main.h, B.d, B.w, B.h, crops[c], s, faces[c]);
+        done++;
+        if (progress) progress(0.92 + 0.08 * (c + 1) / crops.length);
       }
-      else if (nm === 'sharp') { sharpen(d, w, h, (p.sharp / 100) * 2.2 * (1 + 0.2 * Math.log(scale) / Math.LN2), ls); }
-      end(wt);
+      info.faces = done;
     }
-    return { data: d, w: w, h: h, info: info };
+    return { data: main.d, w: main.w, h: main.h, info: info };
   }
 
-  self.__engine = { run: run, autoLevels: autoLevels, removeDust: removeDust, denoise: denoise, upscale: upscale, sharpen: sharpen, vibrance: vibrance };
+  /* Face finder: an LBP cascade (the model is passed in by the page). It looks for frontal
+     faces on a reduced copy of the photo and returns ellipses that also cover hair and chin.
+     It is approximate, so the page lets people add or remove areas by hand. */
+  var faceModel = null;
+
+  function detect(d, w, h, minN) {
+    var m = faceModel;
+    if (!m) return [];
+    var k = Math.max(1, Math.ceil(Math.max(w, h) / 800));
+    var sw = Math.floor(w / k), sh = Math.floor(h / k);
+    if (sw < 48 || sh < 48) return [];
+    var iw = sw + 1, I = new Int32Array(iw * (sh + 1)), kk = k * k, x, y, xx, yy;
+    for (y = 0; y < sh; y++) {
+      var row = 0;
+      for (x = 0; x < sw; x++) {
+        var sum = 0;
+        for (yy = 0; yy < k; yy++) for (xx = 0; xx < k; xx++) {
+          var j = ((y * k + yy) * w + x * k + xx) * 4;
+          sum += d[j] * 77 + d[j + 1] * 150 + d[j + 2] * 29;
+        }
+        row += Math.round(sum / kk / 256);
+        I[(y + 1) * iw + x + 1] = I[y * iw + x + 1] + row;
+      }
+    }
+    var F = m.f, S = m.s, nf = F.length, hits = [];
+    var offs = new Int32Array(nf * 16);
+    for (var sc = 1; m.w * sc <= Math.min(sw, sh) * 0.98; sc *= 1.2) {
+      var ws = Math.round(m.w * sc), hs = Math.round(m.h * sc), step = Math.max(2, Math.round(sc));
+      for (var f = 0; f < nf; f++) {
+        var fx = Math.round(F[f][0] * sc), fy = Math.round(F[f][1] * sc);
+        var cw = Math.max(1, Math.round(F[f][2] * sc)), ch = Math.max(1, Math.round(F[f][3] * sc));
+        for (var r = 0; r < 4; r++) for (var c = 0; c < 4; c++) offs[f * 16 + r * 4 + c] = (fy + r * ch) * iw + fx + c * cw;
+      }
+      for (y = 0; y + hs <= sh; y += step) {
+        for (x = 0; x + ws <= sw; x += step) {
+          var base = y * iw + x, pass = true;
+          for (var si = 0; si < S.length && pass; si++) {
+            var nodes = S[si].n, acc = 0;
+            for (var ni = 0; ni < nodes.length; ni++) {
+              var nd = nodes[ni], o = nd[0] * 16;
+              // 16 corner values of the 4 x 4 grid
+              var g = [I[base + offs[o]], I[base + offs[o + 1]], I[base + offs[o + 2]], I[base + offs[o + 3]],
+                       I[base + offs[o + 4]], I[base + offs[o + 5]], I[base + offs[o + 6]], I[base + offs[o + 7]],
+                       I[base + offs[o + 8]], I[base + offs[o + 9]], I[base + offs[o + 10]], I[base + offs[o + 11]],
+                       I[base + offs[o + 12]], I[base + offs[o + 13]], I[base + offs[o + 14]], I[base + offs[o + 15]]];
+              var cv = g[10] - g[6] - g[9] + g[5];
+              var code = (g[5] - g[1] - g[4] + g[0] >= cv ? 128 : 0) | (g[6] - g[2] - g[5] + g[1] >= cv ? 64 : 0) |
+                         (g[7] - g[3] - g[6] + g[2] >= cv ? 32 : 0) | (g[11] - g[7] - g[10] + g[6] >= cv ? 16 : 0) |
+                         (g[15] - g[11] - g[14] + g[10] >= cv ? 8 : 0) | (g[14] - g[10] - g[13] + g[9] >= cv ? 4 : 0) |
+                         (g[13] - g[9] - g[12] + g[8] >= cv ? 2 : 0) | (g[9] - g[5] - g[8] + g[4] >= cv ? 1 : 0);
+              acc += (nd[1 + (code >> 5)] & (1 << (code & 31))) ? nd[9] : nd[10];
+            }
+            if (acc < S[si].t) pass = false;
+          }
+          if (pass) hits.push([x, y, ws, hs]);
+        }
+      }
+    }
+    // merge overlapping hits; a real face is hit many times
+    var cl = [];
+    for (var i = 0; i < hits.length; i++) {
+      var hh = hits[i], placed = false;
+      for (var ci = 0; ci < cl.length; ci++) {
+        var cc = cl[ci], mx = cc.x / cc.n, my = cc.y / cc.n, mw = cc.w / cc.n, mh = cc.h / cc.n;
+        var ox = Math.min(hh[0] + hh[2], mx + mw) - Math.max(hh[0], mx), oy = Math.min(hh[1] + hh[3], my + mh) - Math.max(hh[1], my);
+        if (ox > 0 && oy > 0) {
+          var inter = ox * oy, uni = hh[2] * hh[3] + mw * mh - inter;
+          if (inter / uni > 0.3) { cc.x += hh[0]; cc.y += hh[1]; cc.w += hh[2]; cc.h += hh[3]; cc.n++; placed = true; break; }
+        }
+      }
+      if (!placed) cl.push({ x: hh[0], y: hh[1], w: hh[2], h: hh[3], n: 1 });
+    }
+    var need = minN || 4, out = [];
+    for (var a = 0; a < cl.length; a++) {
+      var e = cl[a]; if (e.n < need) continue;
+      out.push({ x: e.x / e.n, y: e.y / e.n, w: e.w / e.n, h: e.h / e.n, n: e.n });
+    }
+    out.sort(function (p, q) { return q.n - p.n; });
+    var keep = [];
+    for (var b = 0; b < out.length && keep.length < 8; b++) {
+      var r0 = out[b], inside = false;
+      for (var c2 = 0; c2 < keep.length; c2++) {
+        var kp = keep[c2], cx0 = r0.x + r0.w / 2, cy0 = r0.y + r0.h / 2;
+        if (cx0 > kp.x && cx0 < kp.x + kp.w && cy0 > kp.y && cy0 < kp.y + kp.h) { inside = true; break; }
+      }
+      if (!inside) keep.push(r0);
+    }
+    return keep.map(function (r) {
+      return { cx: (r.x + r.w / 2) * k, cy: (r.y + r.h / 2) * k, rx: r.w * 0.62 * k, ry: r.h * 0.72 * k, n: r.n };
+    });
+  }
+
+  self.__engine = { setModel: function (m) { faceModel = m; }, run: run, enhance: enhance, detect: detect, shock: shock, autoLevels: autoLevels, removeDust: removeDust, denoise: denoise, upscale: upscale, sharpen: sharpen, vibrance: vibrance };
 
   self.onmessage = function (e) {
     var m = e.data;
@@ -311,6 +510,11 @@ function restoreEngineWorker() {
       if (m.type === 'init') {
         base = { w: m.w, h: m.h, data: new Uint8ClampedArray(m.data) };
         self.postMessage({ type: 'ready' });
+      } else if (m.type === 'model') {
+        faceModel = m.model;
+        self.postMessage({ type: 'model-ok' });
+      } else if (m.type === 'detect') {
+        self.postMessage({ type: 'faces', id: m.id, faces: detect(base.data, base.w, base.h), w: base.w, h: base.h });
       } else if (m.type === 'run') {
         var last = -1, post = function (f) {
           var q = Math.round(f * 100);

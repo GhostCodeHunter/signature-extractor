@@ -64,6 +64,65 @@
     }, ms || 1600);
   };
 
+
+  /* ---------- top progress bar ---------- */
+  const bar = $('#progress');
+  SX.progress = (() => {
+    let v = 0, timer = 0, hideT = 0, active = false;
+    const paint = () => { if (bar) bar.style.transform = 'scaleX(' + v + ')'; };
+    const api = {
+      start() {
+        clearTimeout(hideT); clearInterval(timer);
+        active = true; v = 0.08;
+        if (bar) { bar.classList.add('on'); }
+        paint();
+        timer = setInterval(() => { v += (0.86 - v) * 0.07; paint(); }, 120);
+      },
+      set(p) {
+        if (!active) api.start();
+        clearInterval(timer);
+        v = Math.max(v, Math.min(0.97, p)); paint();
+      },
+      done() {
+        clearInterval(timer);
+        if (!active) return;
+        active = false; v = 1; paint();
+        hideT = setTimeout(() => {
+          if (bar) bar.classList.remove('on');
+          hideT = setTimeout(() => { v = 0; paint(); }, 300);
+        }, 220);
+      },
+    };
+    return api;
+  })();
+
+  /* ---------- drop zone while a file is being read ---------- */
+  SX.dropBusy = function (drop, on) {
+    clearTimeout(drop._busyT);
+    const h = $('h2', drop);
+    if (on) {
+      drop.setAttribute('aria-busy', 'true');
+      // only show the loading state if reading takes a moment, so quick opens do not flicker
+      drop._busyT = setTimeout(() => {
+        drop.classList.add('is-loading');
+        if (h) { if (drop._h == null) drop._h = h.textContent; h.textContent = 'Reading your photo'; }
+      }, 140);
+    } else {
+      drop.removeAttribute('aria-busy');
+      drop.classList.remove('is-loading');
+      if (h && drop._h != null) { h.textContent = drop._h; drop._h = null; }
+    }
+  };
+
+  /* ---------- three-step indicator on the tool pages ---------- */
+  SX.steps = function (ol, n) {
+    if (!ol) return;
+    $$('li', ol).forEach((li, i) => {
+      li.classList.toggle('done', i < n - 1);
+      if (i === n - 1) li.setAttribute('aria-current', 'step'); else li.removeAttribute('aria-current');
+    });
+  };
+
   /* ---------- saving a file ---------- */
   // Inside Claude the page asks the host to save; anywhere else it uses a normal download link.
   let hostDownloads = null;
@@ -136,6 +195,7 @@
     const stop = () => { if (raf) { cancelAnimationFrame(raf); raf = 0; } };
     const fromEvent = (e) => { const r = root.getBoundingClientRect(); set(((e.clientX - r.left) / r.width) * 100); };
     root.addEventListener('pointerdown', (e) => {
+      if (root.classList.contains('marking')) return;
       if (e.pointerType === 'mouse' && e.button !== 0) return;
       stop(); dragging = true; root.classList.add('dragging');
       try { root.setPointerCapture(e.pointerId); } catch (_) {}
@@ -189,17 +249,20 @@
       NAMES.forEach((n) => { views[n].hidden = n !== name; });
       return;
     }
+    SX.progress.start();
     if (prev && !prev.hidden && !reduce()) {
       const out = prev.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateY(-6px)' }], { duration: 140, easing: EASE, fill: 'forwards' });
       await out.finished.catch(() => {});
       out.cancel();
     }
-    if (SX.route !== name) return;           // the route changed again while fading out
+    if (SX.route !== name) { SX.progress.done(); return; }   // the route changed again while fading out
     NAMES.forEach((n) => { views[n].hidden = n !== name; });
     window.scrollTo(0, 0);
     if (!reduce()) next.animate([{ opacity: 0, transform: 'translateY(10px)' }, { opacity: 1, transform: 'none' }], { duration: 320, easing: EASE });
     const h = $('h1', next);
     if (h) h.focus({ preventScroll: true });
+    watchReveals(next);
+    SX.progress.done();
   }
   window.addEventListener('hashchange', () => show(routeFromHash(), false));
 
@@ -241,6 +304,14 @@
     return new File([blob], name, { type: type || blob.type || 'image/jpeg' });
   };
 
+  /* ---------- scroll reveal ---------- */
+  const io = 'IntersectionObserver' in window ? new IntersectionObserver((entries) => {
+    entries.forEach((en) => { if (en.isIntersecting) { en.target.classList.add('in'); io.unobserve(en.target); } });
+  }, { rootMargin: '0px 0px -8% 0px', threshold: 0.08 }) : null;
+  function watchReveals(scope) {
+    $$('.sr:not(.in)', scope || document).forEach((n) => { if (io) io.observe(n); else n.classList.add('in'); });
+  }
+
   /* ---------- boot ---------- */
   const nav = $('#nav');
   const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 4);
@@ -252,7 +323,37 @@
 
   const demo = SX.compare($('#demo-cmp'));
   SX.compare($('#card-cmp'));
-  // one explanatory sweep after the hero has settled
   demo.set(96);
-  setTimeout(() => demo.animateTo(50, 1100), 1100);
+
+  // The splash stays for a short, fixed beat (the stroke needs about a second to draw),
+  // and for longer only if fonts or the page are still loading. A CSS rule and a timer
+  // in the page head also clear it, so a script error can never leave it on screen.
+  const root = document.documentElement;
+  const boot = $('#boot');
+  const MIN_SPLASH = 1400, MAX_SPLASH = 4000;
+  const t0 = performance.now();
+  let started = false;
+  function ready() {
+    if (started) return;
+    started = true;
+    root.classList.add('is-ready');
+    watchReveals(document);
+    if (boot) {
+      boot.classList.add('out');
+      setTimeout(() => { if (boot.parentNode) boot.remove(); }, reduce() ? 0 : 700);
+    }
+    // one explanatory sweep once the hero has settled
+    setTimeout(() => demo.animateTo(50, 1100), reduce() ? 0 : 1100);
+  }
+  if (!boot || reduce()) {
+    ready();
+  } else {
+    const loaded = new Promise((res) => { if (document.readyState === 'complete') res(); else window.addEventListener('load', res, { once: true }); });
+    const fonts = document.fonts && document.fonts.ready ? Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 1500))]) : Promise.resolve();
+    Promise.all([loaded, fonts]).then(() => {
+      const wait = Math.max(0, MIN_SPLASH - (performance.now() - t0));
+      setTimeout(ready, wait);
+    });
+    setTimeout(ready, MAX_SPLASH);
+  }
 })();

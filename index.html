@@ -5,12 +5,40 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Signature Extractor</title>
 <meta name="description" content="Turn a photo of your signature into a transparent PNG, and restore old or low-quality photos. Both tools run in your browser.">
+<script>document.documentElement.className+=' js';setTimeout(function(){document.documentElement.classList.add('is-ready')},6000)</script>
+<style id="boot-css">
+html.js:not(.is-ready){overflow:hidden}
+#boot{position:fixed;inset:0;z-index:100;display:grid;place-items:center;background:#f7f4ee;transition:opacity .45s cubic-bezier(.22,1,.36,1),visibility 0s .45s;animation:boot-fail .01s 6s forwards}
+#boot.out{opacity:0;visibility:hidden}
+.boot-in{display:grid;justify-items:center;gap:16px;transition:transform .45s cubic-bezier(.22,1,.36,1)}
+#boot.out .boot-in{transform:translateY(-8px) scale(.98)}
+.boot-mark{width:112px;height:80px;fill:none;stroke:#23408e;stroke-width:.65;stroke-linecap:round;stroke-linejoin:round;overflow:visible}
+.boot-mark path{stroke-dasharray:1;stroke-dashoffset:1;animation:boot-draw 950ms .15s cubic-bezier(.22,1,.36,1) forwards}
+.boot-name{margin:0;font:400 26px/32px "Instrument Serif","Iowan Old Style",Georgia,serif;color:#1f1b16;opacity:0;animation:boot-fade .5s .7s ease forwards}
+.boot-bar{width:120px;height:2px;background:rgba(31,27,22,.1);border-radius:2px;overflow:hidden;opacity:0;animation:boot-fade .3s .5s forwards}
+.boot-bar i{display:block;height:100%;width:40%;background:#23408e;border-radius:2px;animation:boot-run 1s .5s cubic-bezier(.65,0,.35,1) infinite}
+@keyframes boot-draw{to{stroke-dashoffset:0}}
+@keyframes boot-fade{to{opacity:1}}
+@keyframes boot-run{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
+@keyframes boot-fail{to{opacity:0;visibility:hidden}}
+@media (prefers-reduced-motion:reduce){#boot{display:none}html.js:not(.is-ready){overflow:auto}}
+</style>
+<noscript><style>#boot{display:none}html.js:not(.is-ready){overflow:auto}.reveal,.sr{opacity:1 !important;transform:none !important}.ink-line path{stroke-dashoffset:0 !important}</style></noscript>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500&family=Instrument+Serif&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
+
+<div id="boot" aria-hidden="true">
+  <div class="boot-in">
+    <svg class="boot-mark" viewBox="0 0 28 20"><path pathLength="1" d="M2 15c3-9 5.500-12 6.800-8.500S5.500 14 8.500 13c3-1 4-8 6-6.500s-1 6.500 2 5.500c2.800-1 4-4 6-5.500 1.200-.9 2.500-.6 3 .5"/></svg>
+    <p class="boot-name">Signature Extractor</p>
+    <span class="boot-bar"><i></i></span>
+  </div>
+</div>
+<div class="progress" id="progress" aria-hidden="true"></div>
 
 <!-- Icon sprite -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
@@ -55,24 +83,15 @@
         <div class="cmp demo-cmp" id="demo-cmp">
           <div class="cmp-layer"><img src="assets/sample-signature-photo.jpg" alt="Photo of a signature on shaded paper" width="1200" height="750"></div>
           <div class="cmp-layer cmp-after"><img class="sig" src="assets/sample-signature.png" alt="The same signature as a transparent PNG" style="left:21.5%;top:25.87%;width:62.6%"></div>
-          <span class="tag tag-l">Photo</span>
-          <span class="tag tag-r">Transparent PNG</span>
+          <span class="tag tag-l">Photo<span class="dim"> · 1200 × 750</span></span>
+          <span class="tag tag-r">Transparent PNG<span class="dim"> · 751 × 376</span></span>
           <div class="cmp-handle" role="slider" tabindex="0" aria-label="Compare the photo and the PNG" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><span class="grip"><svg class="icon" aria-hidden="true"><use href="#i-arrows"/></svg></span></div>
         </div>
         <figcaption>Sample photo. Drag the handle to compare.</figcaption>
       </figure>
     </div>
 
-    <section class="section" aria-labelledby="how-h2">
-      <h2 id="how-h2">From a phone photo to a usable file in three steps</h2>
-      <ol class="steps">
-        <li><span class="n">01</span><h3>Upload a photo</h3><p>Take a picture of your signature on plain paper, or drop in an image you already have.</p></li>
-        <li><span class="n">02</span><h3>Select the signature</h3><p>Drag a box around it to leave out printed lines and borders. Shadows and uneven light are removed for you.</p></li>
-        <li><span class="n">03</span><h3>Fine-tune and download</h3><p>Make the line thicker or thinner, change the ink colour, erase stray marks, then save the PNG.</p></li>
-      </ol>
-    </section>
-
-    <section class="section" aria-labelledby="tools-h2">
+    <section class="section sr" aria-labelledby="tools-h2">
       <h2 id="tools-h2">Two tools, one place</h2>
       <p class="sub">Both work on photos of paper and both run on your device.</p>
       <div class="tools">
@@ -89,7 +108,12 @@
         </article>
         <article class="card">
           <h3>Photo restore</h3>
-          <p>Clean up an old or low-quality photo: faded colour, dust, scratches, noise and softness, with optional 2× or 4× upscaling.</p>
+          <p>Clean up an old or low-quality photo, then enlarge it if you need a bigger file.</p>
+          <ul>
+            <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Fixes faded colour, dust, scratches and noise</li>
+            <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Faces are found and handled gently, never redrawn</li>
+            <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Enlarge to 2×, 4× or 8×</li>
+          </ul>
           <div class="cmp card-cmp" id="card-cmp">
             <div class="cmp-layer"><img src="assets/sample-faded.jpg" alt="A faded, scratched photo of a cat" width="451" height="300"></div>
             <div class="cmp-layer cmp-after"><img src="assets/sample-restored.jpg" alt="The same photo after restoring" width="451" height="300"></div>
@@ -103,10 +127,75 @@
       </div>
     </section>
 
-    <section class="priv" aria-labelledby="priv-h2">
+    <section class="section sr" aria-labelledby="how-h2">
+      <h2 id="how-h2">Extracting a signature takes three steps</h2>
+      <ol class="steps">
+        <li><span class="n">01</span><h3>Upload a photo</h3><p>Take a picture of your signature on plain paper, or drop in an image you already have.</p></li>
+        <li><span class="n">02</span><h3>Select the signature</h3><p>Drag a box around it to leave out printed lines and borders. Shadows and uneven light are removed for you.</p></li>
+        <li><span class="n">03</span><h3>Fine-tune and download</h3><p>Make the line thicker or thinner, change the ink colour, erase stray marks, then save the PNG.</p></li>
+      </ol>
+    </section>
+
+    <section class="section sr" aria-labelledby="pipe-h2">
+      <h2 id="pipe-h2">What photo restore does, in order</h2>
+      <p class="sub">Each step is plain image processing. Here is a faded, scratched sample after every stage.</p>
+      <ol class="strip">
+        <li><figure><img src="assets/sample-faded.jpg" alt="Faded sample photo before any processing" width="451" height="300" loading="lazy"><figcaption><span>01</span>Original</figcaption></figure><p>Low contrast, a colour cast, dust and scratches.</p></li>
+        <li><figure><img src="assets/stage-1-levels.jpg" alt="Sample after colour levels are corrected" width="451" height="300" loading="lazy"><figcaption><span>02</span>Levels and colour</figcaption></figure><p>Each colour channel is stretched to its own range.</p></li>
+        <li><figure><img src="assets/stage-2-dust.jpg" alt="Sample after dust and scratches are removed" width="451" height="300" loading="lazy"><figcaption><span>03</span>Dust removed</figcaption></figure><p>Specks and thin scratches are filled from the pixels around them.</p></li>
+        <li><figure><img src="assets/stage-3-noise.jpg" alt="Sample after noise reduction" width="451" height="300" loading="lazy"><figcaption><span>04</span>Noise smoothed</figcaption></figure><p>Grain is averaged away, guided by the edges so they stay put.</p></li>
+        <li><figure><img src="assets/sample-restored.jpg" alt="Final restored sample" width="451" height="300" loading="lazy"><figcaption><span>05</span>Sharpened</figcaption></figure><p>Edges get a final lift, and colour a gentle boost.</p></li>
+      </ol>
+      <div class="pair">
+        <div>
+          <h3>Faces stay recognisable</h3>
+          <p>Faces are found on your device and cleaned more gently than the rest of the photo, so skin keeps its texture. Nothing is redrawn. If a face is missed, mark it by hand.</p>
+        </div>
+        <div>
+          <h3>Enlarge to 2×, 4× or 8×</h3>
+          <p>Edges are rebuilt sharper at each step, and noise reduction rises a little with the size. A bigger file is not more detail: what the camera missed stays missing.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="priv sr" aria-labelledby="priv-h2">
       <div class="priv-in">
         <h2 id="priv-h2">Your photos stay on your device</h2>
         <p>The extractor and photo restore both run entirely in your browser. Photos are never uploaded, and there is no account to create.</p>
+      </div>
+    </section>
+
+    <section class="section sr" aria-labelledby="faq-h2">
+      <h2 id="faq-h2">Questions</h2>
+      <div class="faq">
+        <details>
+          <summary>Is my photo uploaded anywhere?</summary>
+          <p>No. Both tools run in your browser on your device. The photo is never sent to a server, and there is no account.</p>
+        </details>
+        <details>
+          <summary>Does photo restore use AI?</summary>
+          <p>No. It uses classic image processing: tone correction, speck repair, noise reduction and sharpening. That means it cannot invent detail, and it cannot change who is in a photo.</p>
+        </details>
+        <details>
+          <summary>Will it change the faces in my photo?</summary>
+          <p>It does not redraw faces. With face protection on, detected faces get lighter noise reduction and sharpening and no colour boost. Strict mode only corrects tone and resizes. The finder works best on faces that look at the camera, so you can mark any it misses.</p>
+        </details>
+        <details>
+          <summary>Why does 8× not look like a sharper original?</summary>
+          <p>Enlarging makes the pixel grid bigger and the edges cleaner. It cannot recover fine texture the camera never recorded, so very large sizes look smoother, not more detailed.</p>
+        </details>
+        <details>
+          <summary>What size of photo can I use?</summary>
+          <p>Photos up to 24 megapixels open, and the saved file can be up to 36 megapixels. Larger enlargements are switched off for big photos.</p>
+        </details>
+      </div>
+    </section>
+
+    <section class="cta sr" aria-labelledby="cta-h2">
+      <h2 id="cta-h2">Try it with your own photo</h2>
+      <div class="cta-actions">
+        <a class="btn btn-primary btn-lg" href="#signature">Extract a signature <svg class="icon icon-arrow" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+        <a class="btn btn-lg" href="#restore">Restore a photo</a>
       </div>
     </section>
   </section>
@@ -114,8 +203,14 @@
   <!-- ============ SIGNATURE TOOL ============ -->
   <section class="view" id="view-signature" data-title="Extract signature · Signature Extractor" hidden aria-labelledby="sig-h1">
     <header class="tool-head">
+      <nav class="crumbs" aria-label="Breadcrumb"><a href="#">Home</a><span aria-hidden="true">/</span><span aria-current="page">Extract signature</span></nav>
       <h1 id="sig-h1" tabindex="-1">Extract your signature</h1>
       <p>Upload a photo of your signature and get your own handwriting back as a transparent PNG. The strokes are lifted from the photo, not redrawn, so the result matches the original.</p>
+      <ol class="stepper" id="s-steps" aria-label="Progress">
+        <li aria-current="step"><span class="b"><span class="num">1</span><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span><span class="t">Add photo</span></li>
+        <li><span class="b"><span class="num">2</span><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span><span class="t">Select and tune</span></li>
+        <li><span class="b"><span class="num">3</span><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span><span class="t">Download</span></li>
+      </ol>
     </header>
 
     <section id="intro" aria-label="Upload a photo">
@@ -217,8 +312,14 @@
   <!-- ============ PHOTO RESTORE ============ -->
   <section class="view" id="view-restore" data-title="Restore photo · Signature Extractor" hidden aria-labelledby="res-h1">
     <header class="tool-head">
+      <nav class="crumbs" aria-label="Breadcrumb"><a href="#">Home</a><span aria-hidden="true">/</span><span aria-current="page">Restore photo</span></nav>
       <h1 id="res-h1" tabindex="-1">Restore and enhance a photo</h1>
       <p>Fix faded colour, dust, scratches, noise and softness in an old or low-quality photo, and upscale it if you need a bigger file. This uses classic image processing on your device, so it cleans and sharpens what is in the photo but does not invent detail that was never captured.</p>
+      <ol class="stepper" id="r-steps" aria-label="Progress">
+        <li aria-current="step"><span class="b"><span class="num">1</span><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span><span class="t">Add photo</span></li>
+        <li><span class="b"><span class="num">2</span><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span><span class="t">Adjust</span></li>
+        <li><span class="b"><span class="num">3</span><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span><span class="t">Download</span></li>
+      </ol>
     </header>
 
     <section id="r-intro" aria-label="Upload a photo">
@@ -226,6 +327,7 @@
         <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-image"/></svg>
         <h2>Drop an old or low-quality photo here</h2>
         <p>or paste an image with Ctrl+V</p>
+        <p class="drop-meta">JPG, PNG or WebP, up to 24 megapixels</p>
         <span class="btn btn-primary">Choose photo</span>
         <input class="sr-only" id="r-file" type="file" accept="image/*">
       </label>
@@ -244,7 +346,9 @@
             <div class="cmp-layer cmp-after"><canvas id="r-after"></canvas></div>
             <span class="tag tag-l">Before</span>
             <span class="tag tag-r">After</span>
+            <div class="cmp-wait" id="r-wait" aria-hidden="true"></div>
             <div class="cmp-handle" role="slider" tabindex="0" aria-label="Compare before and after" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><span class="grip"><svg class="icon" aria-hidden="true"><use href="#i-arrows"/></svg></span></div>
+            <div class="faces" id="r-faces" aria-hidden="true"></div>
           </div>
           <p class="hint">Drag the handle to compare. The preview is a smaller copy, and the download is processed at full size.</p>
         </section>
@@ -283,15 +387,33 @@
             </div>
           </div>
 
+          <div class="group" id="r-faces-group">
+            <p class="label" id="r-face-l">Protect faces</p>
+            <div class="seg" id="r-face" role="group" aria-labelledby="r-face-l">
+              <button type="button" data-v="0" aria-pressed="false">Off</button>
+              <button type="button" data-v="1" aria-pressed="true">Gentle</button>
+              <button type="button" data-v="2" aria-pressed="false">Strict</button>
+            </div>
+            <p class="note-line" id="r-face-note" role="status"></p>
+            <div class="inline-actions">
+              <button class="btn btn-sm" id="r-face-mark" type="button" aria-pressed="false">Mark a face</button>
+              <button class="link" id="r-face-clear" type="button" hidden>Clear marked areas</button>
+            </div>
+          </div>
+
           <div class="group">
             <p class="label" id="r-scale-l">Size</p>
             <div class="seg" id="r-scale" role="group" aria-labelledby="r-scale-l">
               <button type="button" data-v="1" aria-pressed="true">Original</button>
               <button type="button" data-v="2" aria-pressed="false">2×</button>
               <button type="button" data-v="4" aria-pressed="false">4×</button>
+              <button type="button" data-v="8" aria-pressed="false">8×</button>
             </div>
             <p class="r-size" id="r-size"></p>
+            <p class="note-line">Larger sizes sharpen edges and add light noise reduction. They do not add detail that was never captured.</p>
           </div>
+
+          <p class="note-line">Fading fixes assume the photo has real shadows and highlights, so lower it if colours look too strong. High dust and noise settings can soften fine texture.</p>
 
           <div class="r-actions">
             <div class="row2">
@@ -302,7 +424,6 @@
               </div>
             </div>
             <button class="btn btn-primary btn-lg" id="r-download" type="button"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>Download restored photo</span></button>
-            <p class="note-line">Fading fixes assume the photo has real shadows and highlights, so lower it if colours look too strong. High dust and noise settings can soften fine texture.</p>
           </div>
         </aside>
       </div>
@@ -328,6 +449,7 @@
 <script src="js/app.js"></script>
 <script src="js/signature.js"></script>
 <script src="js/engine.js"></script>
+<script src="js/facemodel.js"></script>
 <script src="js/restore.js"></script>
 </body>
 </html>
