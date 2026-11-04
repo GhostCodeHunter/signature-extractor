@@ -9,6 +9,8 @@
   var DET_URL = 'models/scrfd_2.5g.onnx';
   var FACE_URLS = [
     'models/gpen_bfr_256.onnx',
+    // a copy of the page that does not include the models folder (the published artifact) reads it from the repository
+    'https://raw.githubusercontent.com/GhostCodeHunter/signature-extractor/main/models/gpen_bfr_256.onnx',
     'https://raw.githubusercontent.com/rkarthikraj198-stack/signature-extractor/main/models/gpen_bfr_256.onnx'
   ];
   var CACHE = 'sx-ai-models-v1', USER_KEY = 'https://sx.local/user-face-model';
