@@ -362,9 +362,11 @@ async function startAi() {
     stopAi(true);
     if (e && e.message === 'model-missing') {
       setAiNote('The face model could not be loaded here. It is a 76 MB file (gpen_bfr_256.onnx) that sits in the models folder of the project. If you have a copy, choose it and it will be used.');
+      SX.toast('AI face detail could not load its model, so this is the classic result.', true);
       el.aiPick.hidden = false;
     } else {
       setAiNote('The face step could not run: ' + ((e && e.message) || 'unknown error') + '. The rest of the restore still works.');
+      SX.toast('AI face detail could not run, so this is the classic result.', true);
       el.aiPick.hidden = false;
     }
   }

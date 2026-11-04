@@ -1,18 +1,14 @@
 /* Page side of the AI face step: loads the worker and the models, finds faces, aligns each one to the
    layout the face network expects, and returns the network's output so the engine can blend it back.
-   Models come from this site's /models folder, then from the project's GitHub copy, then from a file the
-   person picks. A model that has been fetched or picked is kept in the browser's cache storage. */
+   Models come from this site's /models folder (as one .onnx file, or as numbered pieces (named .wasm, the one binary type the artifact host serves) where a host
+   will not serve .onnx or caps the size of a file), then from a file the person picks. A model that has been
+   fetched or picked is kept in the browser's cache storage when the page is allowed to use it. */
 (function () {
   'use strict';
   var SX = window.SX = window.SX || {};
 
-  var DET_URL = 'models/scrfd_2.5g.onnx';
-  var FACE_URLS = [
-    'models/gpen_bfr_256.onnx',
-    // a copy of the page that does not include the models folder (the published artifact) reads it from the repository
-    'https://raw.githubusercontent.com/GhostCodeHunter/signature-extractor/main/models/gpen_bfr_256.onnx',
-    'https://raw.githubusercontent.com/rkarthikraj198-stack/signature-extractor/main/models/gpen_bfr_256.onnx'
-  ];
+  var DET_URLS = ['models/scrfd_2.5g.onnx', ['models/scrfd_2.5g.part1.wasm']];
+  var FACE_URLS = ['models/gpen_bfr_256.onnx', ['models/gpen_bfr_256.part1.wasm', 'models/gpen_bfr_256.part2.wasm', 'models/gpen_bfr_256.part3.wasm', 'models/gpen_bfr_256.part4.wasm']];
   var CACHE = 'sx-ai-models-v1', USER_KEY = 'https://sx.local/user-face-model';
   // where the eyes, nose and mouth corners sit in a 512 px face crop (the layout these networks were trained on)
   var TPL = [[192.98138, 239.94708], [318.90277, 240.1936], [256.63416, 314.01935], [201.26117, 371.41043], [313.08905, 371.15118]];
@@ -23,8 +19,8 @@
   function abs(u) { return new URL(u, document.baseURI).href; }
   async function openCache() { try { return await caches.open(CACHE); } catch (_) { return null; } }
 
-  async function fetchBuffer(url, onProgress) {
-    var cache = await openCache(), key = abs(url);
+  async function fetchBuffer(url, onProgress, skipCache) {
+    var cache = skipCache ? null : await openCache(), key = abs(url);
     if (cache) { var hit = await cache.match(key); if (hit) return hit.arrayBuffer(); }
     var res = await fetch(key);
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -42,6 +38,22 @@
     if (got < 1e6) throw new Error('too small to be a model');
     if (cache) { try { await cache.put(key, new Response(buf.slice().buffer, { headers: { 'content-type': 'application/octet-stream' } })); } catch (_) { /* storage full or blocked: fine */ } }
     return buf.buffer;
+  }
+
+  /* one file, or a list of pieces to be joined (the first piece's address is the cache key for the whole) */
+  async function fetchSpec(spec, onProgress) {
+    if (typeof spec === 'string') return fetchBuffer(spec, onProgress);
+    var cache = await openCache(), key = abs(spec[0]);
+    if (cache) { var hit = await cache.match(key); if (hit) return hit.arrayBuffer(); }
+    var parts = [], total = 0, i;
+    for (i = 0; i < spec.length; i++) {
+      var p = await fetchBuffer(spec[i], onProgress && function (f) { onProgress((i + f) / spec.length); }, true);
+      parts.push(new Uint8Array(p)); total += p.byteLength;
+    }
+    var out = new Uint8Array(total), o = 0;
+    parts.forEach(function (p) { out.set(p, o); o += p.length; });
+    if (cache) { try { await cache.put(key, new Response(out.slice().buffer, { headers: { 'content-type': 'application/octet-stream' } })); } catch (_) { /* fine */ } }
+    return out.buffer;
   }
 
   function call(msg, transfer) {
@@ -70,7 +82,9 @@
     } catch (_) { worker = new Worker(abs('js/aiworker.js')); }
     worker.onmessage = onMessage;
     worker.onerror = function (e) { Object.keys(pending).forEach(function (k) { pending[k].rej(new Error(e.message || 'worker error')); delete pending[k]; }); };
-    var det = await fetchBuffer(DET_URL);
+    var det = null;
+    for (var i = 0; !det && i < DET_URLS.length; i++) { try { det = await fetchSpec(DET_URLS[i]); } catch (_) { det = null; } }
+    if (!det) throw new Error('model-missing');
     await call({ type: 'init', base: base, det: det }, [det]);
   }
 
@@ -88,7 +102,7 @@
       var buf = null, cache = await openCache();
       if (cache) { var u = await cache.match(USER_KEY); if (u) { buf = await u.arrayBuffer(); ai.source = 'the file you chose'; } }
       for (var i = 0; !buf && i < FACE_URLS.length; i++) {
-        try { buf = await fetchBuffer(FACE_URLS[i], onProgress); ai.source = FACE_URLS[i]; } catch (_) { buf = null; }
+        try { buf = await fetchSpec(FACE_URLS[i], onProgress); ai.source = String(FACE_URLS[i]); } catch (_) { buf = null; }
       }
       if (!buf) throw new Error('model-missing');
       var r = await call({ type: 'model', model: buf }, [buf]);
