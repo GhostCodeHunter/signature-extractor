@@ -13,7 +13,7 @@ The strokes come from your photo, so the result keeps the shape, line weight and
 
 1. Choose, drag in or paste a photo of your signature.
 2. Drag a box around the signature to leave out lines, borders and shadows.
-3. Adjust the result if needed: line thickness, ink sensitivity, edge softness, clean specks, padding and ink colour. **Output** chooses Traced or Pixels, and **Watermark removal** chooses Off, Auto or Strong.
+3. Adjust the result if needed: line thickness, ink sensitivity, edge softness, clean specks, padding and ink colour. **Output** chooses Traced or Pixels, **Watermark removal** chooses Off, Auto or Strong, and **Real ink** gives the strokes the look of a real pen.
 4. Click a stray mark in the result to erase it.
 5. Download the PNG (transparent or white background) or the SVG, or copy the image.
 
@@ -25,6 +25,17 @@ How it works: the paper brightness around each pixel is estimated from the photo
 
 - **Traced** (default) redraws the strokes as smooth outlines at up to 4× the photo's size, so edges stay crisp when you enlarge the signature. The outline level is picked so that the traced strokes cover the same area as the photo's strokes, which keeps the line weight. Outlines are found with marching squares, simplified, and drawn as curves. The SVG download holds the same outlines as one filled path.
 - **Pixels** keeps the photo's own pixels with a soft edge, at the photo's own size.
+
+### Real ink
+
+Off by default, so the result stays an exact copy of your signature. Ballpoint, Fountain pen, Felt tip and Aged reshape the ink of the finished PNG, with a Strength slider.
+
+- **Ballpoint**: slightly uneven ink, fine grain, a ragged edge and a few tiny gaps in thin parts.
+- **Fountain pen**: ink collects and darkens in thick parts, thin parts turn lighter, and the edge feathers a little.
+- **Felt tip**: solid colour with soft, slightly bleeding edges.
+- **Aged**: faded, patchy ink with more gaps and a rougher edge.
+
+How it works: the average pen width is measured from the strokes, and every effect is sized from it, so the look is the same at any zoom. Edge roughness, ink density, pooling and gaps come from seeded noise, so the same signature always gets the same texture. The effect changes the finished PNG only: the SVG download always keeps the clean outlines, and click-to-erase still works on the clean strokes. Large outputs (over 12 megapixels) are left clean.
 
 ### Watermarks
 
@@ -64,6 +75,7 @@ The bundled detector in `js/facemodel.js` is OpenCV's `lbpcascade_frontalface` (
 - `index.html`: the page, with a landing view and the two tools (`#signature`, `#restore`)
 - `css/app.css`, `js/app.js`: shared styles, routing and helpers
 - `js/signature.js`: signature extraction
+- `js/realink.js`: the Real ink pen looks
 - `js/engine.js`, `js/restore.js`: the restore engine and its page
 - `js/facemodel.js`: the face-finder model data
 - `assets/`: sample photos and the stage images shown on the landing page

@@ -103,6 +103,7 @@ html.js:not(.is-ready){overflow:hidden}
             <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Thicken or thin the line, or change the ink colour</li>
             <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Traced as smooth outlines, with an SVG download</li>
             <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Watermarks and faint marks are left out</li>
+            <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Optional real-ink looks: ballpoint, fountain pen, felt tip</li>
             <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Click a stray mark to erase it</li>
           </ul>
           <div class="card-art checker"><img src="assets/sample-signature.png" alt="A signature extracted as a transparent PNG" width="751" height="376"></div>
@@ -330,6 +331,22 @@ html.js:not(.is-ready){overflow:hidden}
             <p class="note-line" id="wmNote" role="status"></p>
             <p class="note-line">Marks that are lighter or a different colour than the pen are left out. Pen strokes are kept as they are, except where a mark crosses them. A leftover mark can be erased by clicking it in the result.</p>
           </div>
+          <div class="opt wide">
+            <p class="label" id="fxLabel">Real ink</p>
+            <div class="chips" id="fxChips" role="group" aria-labelledby="fxLabel">
+              <button class="chip" type="button" data-fx="off" aria-pressed="true">Off</button>
+              <button class="chip" type="button" data-fx="ballpoint" aria-pressed="false">Ballpoint</button>
+              <button class="chip" type="button" data-fx="fountain" aria-pressed="false">Fountain pen</button>
+              <button class="chip" type="button" data-fx="felt" aria-pressed="false">Felt tip</button>
+              <button class="chip" type="button" data-fx="aged" aria-pressed="false">Aged</button>
+            </div>
+            <div class="field fx-amt" id="fxAmt" hidden>
+              <div class="row"><label for="fx">Strength</label><output id="fxOut" for="fx">60%</output></div>
+              <input id="fx" type="range" min="10" max="100" step="1" value="60">
+              <div class="ends"><span>Subtle</span><span>Strong</span></div>
+            </div>
+            <p class="note-line">Gives the strokes the look of a real pen: uneven ink, slightly ragged edges, ink pooling in thick parts and tiny gaps in thin ones. The same texture is kept in the PNG. The SVG always keeps the clean outlines.</p>
+          </div>
         </div>
       </section>
 
@@ -475,6 +492,7 @@ html.js:not(.is-ready){overflow:hidden}
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
 <script src="js/app.js"></script>
+<script src="js/realink.js"></script>
 <script src="js/signature.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/facemodel.js"></script>

@@ -16,13 +16,14 @@ const el = {
   sensOut: $('#sensOut'), softOut: $('#softOut'), specksOut: $('#specksOut'), padOut: $('#padOut'),
   customColor: $('#customColor'), customChip: $('#customChip'), origDot: $('#origDot'),
   svg: $('#svg'), wmNote: $('#wmNote'),
+  fx: $('#fx'), fxOut: $('#fxOut'), fxAmt: $('#fxAmt'),
 };
 
 const S = {
   W: 0, H: 0, rgba: null, d: null,
   sel: null, seeds: [], ink: 'original', bg: 'transparent',
   tKey: '', tVal: 60, last: null, url: null, name: 'signature', raf: 0,
-  trace: true, wmMode: 1, wm: null,
+  trace: true, wmMode: 1, wm: null, fxPen: 'off',
 };
 
 /* ---------- loading the photo ---------- */
@@ -723,6 +724,7 @@ function render() {
       tctx.fill(new Path2D(d), 'evenodd');
       tctx.restore();
       info.zoom = z;
+      applyFx([ir, ig, ib]);
       info.svg = { d, w: outW, h: outH, rgb: [ir, ig, ib] };
       S.last = info;
       el.svg.hidden = false;
@@ -743,8 +745,13 @@ function render() {
     }
   }
   ctx.putImageData(img, 0, 0);
+  applyFx([ir, ig, ib]);
   // A and c stay at the strokes' original thickness so a click can find the mark it points at
   S.last = info;
+}
+
+function applyFx(rgb) {
+  if (S.fxPen !== 'off' && SX.realInk) SX.realInk(el.out, rgb, S.fxPen, (+el.fx.value) / 100);
 }
 
 function showEmpty(msg) {
@@ -845,9 +852,10 @@ function syncOutputs() {
   el.specksOut.textContent = el.specks.value;
   el.padOut.textContent = el.pad.value + '%';
   const t = +el.thick.value;
+  el.fxOut.textContent = el.fx.value + '%';
   el.thickOut.textContent = t === 0 ? 'Original' : (t > 0 ? '+' : '\u2212') + Math.abs(t);
 }
-for (const id of ['sens', 'soft', 'specks', 'pad', 'thick']) {
+for (const id of ['sens', 'soft', 'specks', 'pad', 'thick', 'fx']) {
   el[id].addEventListener('input', () => { syncOutputs(); schedule(); });
 }
 function setInk(mode) {
@@ -861,6 +869,12 @@ el.customColor.addEventListener('input', () => setInk('custom'));
 el.customChip.addEventListener('click', (e) => { if (e.target !== el.customColor) { setInk('custom'); } });
 const traceSeg = SX.seg($('#trSeg'), (v) => { S.trace = v === '1'; schedule(); });
 const wmSeg = SX.seg($('#wmSeg'), (v) => { S.wmMode = +v; schedule(); });
+document.querySelectorAll('button[data-fx]').forEach((b) => b.addEventListener('click', () => {
+  S.fxPen = b.dataset.fx;
+  document.querySelectorAll('button[data-fx]').forEach((o) => o.setAttribute('aria-pressed', String(o === b)));
+  el.fxAmt.hidden = S.fxPen === 'off';
+  schedule();
+}));
 const bgSeg = SX.seg($('#bgSeg'), (v) => {
   S.bg = v;
   el.outView.classList.toggle('white', v === 'white');
