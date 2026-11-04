@@ -45,7 +45,7 @@ Limits: a mark in the same colour and darkness as the pen cannot be separated. A
 
 ## Restore photo
 
-This is classic image processing, not AI. It cleans and sharpens what is in the photo and does not invent detail that was never captured. Work runs in a Web Worker, with a live preview at up to 1600 px and a full-size export.
+Almost all of this is classic image processing: it cleans and sharpens what is in the photo and does not invent detail that was never captured. The one exception is the optional **AI face detail** step (see below), which rebuilds the face of a small or blurred portrait with a neural network that runs on your device. Work runs in a Web Worker, with a live preview that is enlarged to the size you chose (up to 1600 px on the long side) and a full-size export.
 
 Steps, in order:
 
@@ -61,15 +61,34 @@ Photos larger than 6000 px on the long side, or 24 megapixels, are reduced when 
 
 ### ID photo and background
 
-The **ID photo** preset turns the tone correction up to full and picks **Sky blue** for the background. Other presets leave the background choice alone.
+The **ID photo** preset turns the tone correction up to full, picks 4× (or the largest size the photo allows), turns **AI face detail** on and picks **Sky blue** for the background. Other presets leave those choices alone. Sky blue is a light shade; if you need a vivid blue like many passport offices ask for, choose **Blue** or a custom colour.
 
 **Background** swaps an even backdrop for one flat colour: Sky blue, Blue, White, Grey or any colour you pick. The backdrop is found from the photo's own edges. A pixel counts as backdrop when it is close to the colour along the top and upper sides, is connected to those edges without crossing a sharp change, and stays close to a smooth estimate of the wall (the wall may be lighter on one side). Lower in the photo the tolerance narrows, because that is where clothing sits. Where hair or a shoulder blends into the wall, the blend is kept and only the wall's share of each pixel is replaced. The person is not changed.
 
 If no even backdrop reaches the top and sides, the page says so and leaves the background as it was. When a garment is nearly the colour of the wall, the edge between them can be a little off. Choose Keep, or a custom colour, in that case.
 
+### AI face detail
+
+A small or blurred portrait has lost the detail of the eyes, brows, lips and skin, and sharpening cannot bring that back. This optional step rebuilds it:
+
+1. **Find the face**: SCRFD (2.5 GFLOPs) finds each face and its five landmarks (up to three faces per photo).
+2. **Align and rebuild**: the face is rotated and scaled to a 256 px square, and GPEN-BFR (a GAN-based blind face restoration network, 256 px) redraws it.
+3. **Put it back, in the photo's own colour**: the rebuilt face replaces only the fine detail. Its overall colour and shading are swapped for the photo's own, so skin tone and lighting stay what they were, and the edge is feathered into the rest of the photo. The flat backdrop is never touched.
+
+It runs in a Web Worker with ONNX Runtime Web (WebAssembly, one thread), so nothing is uploaded. A face takes a few seconds. The **Strength** slider mixes the rebuilt face with the classic result; lower it to stay closer to the original.
+
+The network files are not small. `models/gpen_bfr_256.onnx` is 76 MB and `models/scrfd_2.5g.onnx` is 3 MB. They are fetched the first time AI face detail is switched on and kept in the browser's cache. If the 76 MB file cannot be reached (for example in a copy of the page that does not include the `models` folder), the page says so and offers **Choose a face model file**. The 512 px model (`gpen_bfr_512.onnx`, about 284 MB, from the facefusion-assets release) can be picked there too; it is detected by size and gives a little more detail.
+
+What it does and does not do:
+
+- It is a reconstruction, not a recovery. The network draws plausible detail from a learned idea of faces, so small features (a mole, a scar, the shape of a brow, fine hair texture) can come out different from the real person. **Always compare the result with the original.** Do not use it for any document that must show an unaltered photo.
+- On the test photos the face is clearly sharper and keeps who it is (a forehead mark and the eyebrows survived), and the result is much closer to the studio original than the classic result. But a face-similarity score (ArcFace) against the true original on one test photo came out about the same or slightly lower than the classic result (0.82 for the 256 model, 0.85 for the 512 model, against 0.85 classic). Pixel measures such as PSNR also drop a little, because the invented detail is not aligned to the real one. Treat those numbers as a reminder that the face is drawn, not recovered.
+- Curly hair, beard texture and hair edges are not rebuilt like the original, and the classic cleanup of the rest of the photo is unchanged.
+- Only the face is rebuilt. Hair, neck, clothes and the rest keep the classic result.
+
 ### What it cannot do
 
-It does not take a text prompt, and it does not use a generative model, so it cannot rebuild eyes, hair or skin texture that a small or blurred photo never captured. A 273 px wide passport photo comes out cleaner, with even colour and a flat backdrop, but not like a sharp studio original. On two test photos (each compared with its own full-resolution original) the result moved from roughly 18 to 21 dB PSNR and from 0.73 to 0.85 SSIM with the background swap, and the face area improved only slightly. Reaching a sharp result needs a face-restoration neural network, which would redraw the face. That can change how a person looks, which is a poor fit for official ID photos, so this tool does not do it.
+It does not take a text prompt, and the classic steps cannot rebuild eyes, hair or skin texture that a small or blurred photo never captured. With AI face detail off, a 273 px wide passport photo comes out cleaner, with even colour and a flat backdrop, but not like a sharp studio original. On two test photos (each compared with its own full-resolution original) the classic result moved from roughly 18 to 21 dB PSNR and from 0.73 to 0.85 SSIM with the background swap, and the face area improved only slightly. AI face detail goes a long way beyond that, but only for faces, and at the cost described above. It does not change the clothes, hair outline, or what the photo shows, and it will not make a bad photo into a studio one: a face turned away, hidden by a hand, or smaller than about 30 px may be missed or come out wrong.
 
 ### Face protection
 
@@ -94,3 +113,11 @@ The bundled detector in `js/facemodel.js` is OpenCV's `lbpcascade_frontalface` (
 - `assets/`: sample photos and the stage images shown on the landing page
 
 No dependencies and no build step.
+
+## Credits and licences
+
+- **ONNX Runtime Web** 1.23.0 (MIT), in `vendor/ort`.
+- **GPEN** (GAN Prior Embedded Network, Yang et al., CVPR 2021), the face restoration network. The ONNX conversion used here comes from the facefusion-assets release.
+- **SCRFD** (Guo et al., InsightFace), the face detector, also from facefusion-assets.
+
+The GPEN and SCRFD weights have their own licences, which may restrict commercial use. They have not been checked for this project, so read them before using this page in a product.

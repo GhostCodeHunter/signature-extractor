@@ -381,6 +381,7 @@ function restoreEngineWorker() {
         and only those pixels are made even. Where hair or a shoulder blends into the backdrop, the blend is
         kept: just the backdrop's share of each pixel is swapped for the new colour. The person is not touched. */
   var BG_TARGET = [null, [168, 212, 252], [0, 130, 255], [255, 255, 255], [232, 232, 232]];   // keep, sky blue, blue, white, grey
+  var lastBgMask = null;
   var BG_CUSTOM = 5;                   // a picked colour is passed in with it
   function median(a) { a.sort(function (x, y) { return x - y; }); return a[a.length >> 1]; }
   function cleanBackground(d, w, h, mode, custom) {
@@ -492,6 +493,11 @@ function restoreEngineWorker() {
     var okSeeds = 0; seeds.forEach(function (q) { okSeeds += M2[q]; });
     if (share < 0.06 || okSeeds < seeds.length * 0.5) return { found: false, share: share };
     var B2 = bgMap(M2);
+    // kept for the AI face step: the paste must not touch the backdrop
+    var Mf = new Float32Array(N); for (i = 0; i < N; i++) Mf[i] = M2[i];
+    var Mb = blurF(Mf, 1), Mn = Math.pow(3, 4);
+    for (i = 0; i < N; i++) Mf[i] = clamp(Mb[i] / Mn, 0, 1);
+    lastBgMask = { m: Mf, sw: sw, sh: sh };
     // the gate: backdrop pixels grown a little, so blended hair and shoulder edges are included
     var G = new Float32Array(N), gr = Math.max(1, Math.round(Math.max(sw, sh) * 0.012));
     for (i = 0; i < N; i++) G[i] = M2[i];
@@ -499,6 +505,20 @@ function restoreEngineWorker() {
     var norm = Math.pow(2 * gr + 1, 4);
     var GD = new Float32Array(N);       // deep inside the backdrop: specks and dust there are backdrop too
     for (i = 0; i < N; i++) { var gv = Gb[i] / norm; G[i] = clamp(gv * 3, 0, 1); GD[i] = clamp((gv - 0.85) / 0.12, 0, 1); }
+    // edge fringe. A pixel on the edge of the person is (1 - t)·person + t·wall. The wall colour is known (B2) and the
+    // person's colour is read from the cells just inside the edge (Fm), so t can be solved and only the wall part of
+    // the pixel swapped for the new backdrop. This takes the old blue out of hair tips and collars.
+    var Mg = morph(M2, 2, true), Wf = new Float32Array(N), Ff = [new Float32Array(N), new Float32Array(N), new Float32Array(N)], Fv = new Float32Array(N), Ge = new Float32Array(N);
+    for (i = 0; i < N; i++) { Wf[i] = Mg[i] ? 0 : 1; Ge[i] = M2[i]; }
+    var fr = Math.max(3, Math.round(Math.max(sw, sh) * 0.02)), fden = blurF(Wf, fr), fnorm = Math.pow(2 * fr + 1, 4), tmpf = new Float32Array(N);
+    for (c = 0; c < 3; c++) {
+      for (i = 0; i < N; i++) tmpf[i] = Wf[i] * S[i * 3 + c];
+      var fnum = blurF(tmpf, fr);
+      for (i = 0; i < N; i++) Ff[c][i] = fden[i] > 1e-3 ? fnum[i] / fden[i] : 0;
+    }
+    for (i = 0; i < N; i++) Fv[i] = clamp(fden[i] / fnorm * 12, 0, 1);
+    var Geb = blurF(Ge, 2), gnorm = Math.pow(5, 4);
+    for (i = 0; i < N; i++) Ge[i] = clamp(Geb[i] / gnorm * 2.5, 0, 1);
     var fxs = (sw - 1) / Math.max(1, w - 1), fys = (sh - 1) / Math.max(1, h - 1);
     for (y = 0; y < h; y++) {
       var fy = (y + 0.5) / sc - 0.5; fy = clamp(fy, 0, sh - 1); var y0 = fy | 0, y1 = y0 + 1 < sh ? y0 + 1 : y0, ty = fy - y0;
@@ -517,6 +537,28 @@ function restoreEngineWorker() {
         var dist2 = Math.sqrt(dd2), al = 1 - smooth(18, 95, dist2);
         al *= g;
         if (gd > al) al = gd;
+        var ge = Ge[q00] * w00 + Ge[q01] * w01 + Ge[q10] * w10 + Ge[q11] * w11;
+        if (ge > 0.02 && al < 0.98) {
+          var fv = Fv[q00] * w00 + Fv[q01] * w01 + Fv[q10] * w10 + Fv[q11] * w11;
+          var f0 = Ff[0][q00] * w00 + Ff[0][q01] * w01 + Ff[0][q10] * w10 + Ff[0][q11] * w11;
+          var f1 = Ff[1][q00] * w00 + Ff[1][q01] * w01 + Ff[1][q10] * w10 + Ff[1][q11] * w11;
+          var f2 = Ff[2][q00] * w00 + Ff[2][q01] * w01 + Ff[2][q10] * w10 + Ff[2][q11] * w11;
+          var vx = e0[0] - f0, vy = e0[1] - f1, vz = e0[2] - f2, vv = vx * vx + vy * vy + vz * vz;
+          if (fv > 0.3 && vv > 2500) {
+            var px = d[j2] - f0, py = d[j2 + 1] - f1, pz = d[j2 + 2] - f2, tt = (px * vx + py * vy + pz * vz) / vv;
+            var rx = px - tt * vx, ry = py - tt * vy, rz = pz - tt * vz, rr = Math.sqrt(rx * rx + ry * ry + rz * rz);
+            if (tt > 0.1 && rr < 0.2 * Math.sqrt(vv) + 10) { var a2 = clamp((tt - 0.1) / 0.8, 0, 1) * ge; if (a2 > al) al = a2; }
+          }
+          // a darker or deeper patch of the same wall (the shadow at the shoulders): the same hue, right beside the backdrop.
+          // Compared by colour direction after the grey is taken out, so dark hair (no colour) never matches.
+          var dm = (d[j2] + d[j2 + 1] + d[j2 + 2]) / 3, em = (e0[0] + e0[1] + e0[2]) / 3;
+          var c0 = d[j2] - dm, c1 = d[j2 + 1] - dm, c2 = d[j2 + 2] - dm, k0 = e0[0] - em, k1 = e0[1] - em, k2 = e0[2] - em;
+          var cdn = Math.sqrt(c0 * c0 + c1 * c1 + c2 * c2), cen = Math.sqrt(k0 * k0 + k1 * k1 + k2 * k2);
+          if (cen > 40 && cdn > 0.45 * cen && dm > 20 && dm < em * 1.25) {
+            var cs = (c0 * k0 + c1 * k1 + c2 * k2) / (cdn * cen), a3 = smooth(0.96, 0.99, cs) * ge;
+            if (a3 > al) al = a3;
+          }
+        }
         if (al <= 0) continue;
         var flat = smooth(0.8, 1, al);
         for (c = 0; c < 3; c++) {
@@ -526,6 +568,83 @@ function restoreEngineWorker() {
       }
     }
     return { found: true, share: share, color: tg.map(Math.round) };
+  }
+
+  /* 9. AI faces. The page has run a face-restoration network on an aligned crop of each face. Here that crop is put
+        back: its overall colour and shading are replaced by the photo's own (so skin tone, lighting and the tone work
+        above stay as they were), its fine detail is kept, and the edge is feathered. "amount" mixes it with the
+        classic result. Each face carries the transform from this step's input pixels to crop pixels. */
+  function blurPlane(a, n, r) {       // three box passes ~ a gaussian, edges clamped
+    var tmp = new Float32Array(n * n), out = new Float32Array(a), x, y, k, sum, pass;
+    for (pass = 0; pass < 3; pass++) {
+      for (y = 0; y < n; y++) {
+        sum = 0; for (k = -r; k <= r; k++) sum += out[y * n + clamp(k, 0, n - 1)];
+        for (x = 0; x < n; x++) { tmp[y * n + x] = sum / (2 * r + 1); sum += out[y * n + clamp(x + r + 1, 0, n - 1)] - out[y * n + clamp(x - r, 0, n - 1)]; }
+      }
+      for (x = 0; x < n; x++) {
+        sum = 0; for (k = -r; k <= r; k++) sum += tmp[clamp(k, 0, n - 1) * n + x];
+        for (y = 0; y < n; y++) { out[y * n + x] = sum / (2 * r + 1); sum += tmp[clamp(y + r + 1, 0, n - 1) * n + x] - tmp[clamp(y - r, 0, n - 1) * n + x]; }
+      }
+    }
+    return out;
+  }
+  function pasteFaces(d, w, h, faces, amount, s, bgm) {
+    var done = 0;
+    for (var f = 0; f < faces.length; f++) {
+      var F = faces[f], n = F.size, M = F.M;
+      var A = M[0] / s, B = M[1] / s, C = M[3] / s, D = M[4] / s, tx = M[2], ty = M[5];     // base pixel -> crop
+      var det = A * D - B * C;
+      if (!(Math.abs(det) > 1e-12)) continue;
+      var iA = D / det, iB = -B / det, iC = -C / det, iD = A / det;                          // crop -> base
+      function toBase(u, v) { var du = u - tx, dv = v - ty; return [iA * du + iB * dv, iC * du + iD * dv]; }
+      var u, v, c, i, planeN = n * n;
+      // the photo as seen in the crop's frame
+      var base = [new Float32Array(planeN), new Float32Array(planeN), new Float32Array(planeN)];
+      for (v = 0; v < n; v++) for (u = 0; u < n; u++) {
+        var bp = toBase(u + 0.5, v + 0.5), px = clamp(bp[0] - 0.5, 0, w - 1), py = clamp(bp[1] - 0.5, 0, h - 1);
+        var x0 = px | 0, y0 = py | 0, x1 = x0 + 1 < w ? x0 + 1 : x0, y1 = y0 + 1 < h ? y0 + 1 : y0, fx = px - x0, fy = py - y0;
+        for (c = 0; c < 3; c++) {
+          base[c][v * n + u] = (d[(y0 * w + x0) * 4 + c] * (1 - fx) + d[(y0 * w + x1) * 4 + c] * fx) * (1 - fy) + (d[(y1 * w + x0) * 4 + c] * (1 - fx) + d[(y1 * w + x1) * 4 + c] * fx) * fy;
+        }
+      }
+      var r = Math.max(2, Math.round(n * 0.1)), ai = [new Float32Array(planeN), new Float32Array(planeN), new Float32Array(planeN)];
+      for (i = 0; i < planeN; i++) { ai[0][i] = F.data[i * 4]; ai[1][i] = F.data[i * 4 + 1]; ai[2][i] = F.data[i * 4 + 2]; }
+      for (c = 0; c < 3; c++) {
+        var bb = blurPlane(base[c], n, r), ba = blurPlane(ai[c], n, r);
+        for (i = 0; i < planeN; i++) ai[c][i] = clamp(ai[c][i] + bb[i] - ba[i], 0, 255);
+      }
+      // the feathered edge, in crop space: the face and hair, fading out above the shoulders
+      var mask = new Float32Array(planeN);
+      for (v = 0; v < n; v++) for (u = 0; u < n; u++) {
+        var uu = (u + 0.5) / n, vv = (v + 0.5) / n;
+        mask[v * n + u] = smooth(0.04, 0.14, uu) * smooth(0.04, 0.14, 1 - uu) * smooth(0, 0.1, vv) * smooth(0, 0.14, 0.93 - vv);
+      }
+      // paint it over the box that the crop covers in the photo
+      var cs = [toBase(0, 0), toBase(n, 0), toBase(0, n), toBase(n, n)];
+      var bx0 = Math.max(0, Math.floor(Math.min(cs[0][0], cs[1][0], cs[2][0], cs[3][0]))), bx1 = Math.min(w - 1, Math.ceil(Math.max(cs[0][0], cs[1][0], cs[2][0], cs[3][0])));
+      var by0 = Math.max(0, Math.floor(Math.min(cs[0][1], cs[1][1], cs[2][1], cs[3][1]))), by1 = Math.min(h - 1, Math.ceil(Math.max(cs[0][1], cs[1][1], cs[2][1], cs[3][1])));
+      for (var y = by0; y <= by1; y++) for (var x = bx0; x <= bx1; x++) {
+        var cu = A * (x + 0.5) + B * (y + 0.5) + tx - 0.5, cv = C * (x + 0.5) + D * (y + 0.5) + ty - 0.5;
+        if (cu < 0 || cv < 0 || cu > n - 1 || cv > n - 1) continue;
+        var u0 = cu | 0, v0 = cv | 0, u1 = u0 + 1 < n ? u0 + 1 : u0, v1 = v0 + 1 < n ? v0 + 1 : v0, gx = cu - u0, gy = cv - v0;
+        var w00 = (1 - gx) * (1 - gy), w01 = gx * (1 - gy), w10 = (1 - gx) * gy, w11 = gx * gy;
+        var al = (mask[v0 * n + u0] * w00 + mask[v0 * n + u1] * w01 + mask[v1 * n + u0] * w10 + mask[v1 * n + u1] * w11) * amount;
+        if (bgm) {      // keep the flat backdrop exactly as it is
+          var bx = clamp((x + 0.5) / w * bgm.sw - 0.5, 0, bgm.sw - 1), by = clamp((y + 0.5) / h * bgm.sh - 0.5, 0, bgm.sh - 1);
+          var bx0_ = bx | 0, by0_ = by | 0, bx1_ = bx0_ + 1 < bgm.sw ? bx0_ + 1 : bx0_, by1_ = by0_ + 1 < bgm.sh ? by0_ + 1 : by0_, hx = bx - bx0_, hy = by - by0_;
+          var bv = (bgm.m[by0_ * bgm.sw + bx0_] * (1 - hx) + bgm.m[by0_ * bgm.sw + bx1_] * hx) * (1 - hy) + (bgm.m[by1_ * bgm.sw + bx0_] * (1 - hx) + bgm.m[by1_ * bgm.sw + bx1_] * hx) * hy;
+          al *= 1 - bv;
+        }
+        if (al <= 0) continue;
+        var o = (y * w + x) * 4;
+        for (c = 0; c < 3; c++) {
+          var val = ai[c][v0 * n + u0] * w00 + ai[c][v0 * n + u1] * w01 + ai[c][v1 * n + u0] * w10 + ai[c][v1 * n + u1] * w11;
+          d[o + c] = d[o + c] + (val - d[o + c]) * al;
+        }
+      }
+      done++;
+    }
+    return done;
   }
 
   /* the whole pipeline, in the order that gives the cleanest result */
@@ -560,6 +679,7 @@ function restoreEngineWorker() {
       info.faces = done;
     }
     if (p.bg > 0) info.bg = cleanBackground(main.d, main.w, main.h, p.bg, p.bgColor);
+    if (p.ai && p.ai.length && p.aiAmount > 0) info.ai = pasteFaces(main.d, main.w, main.h, p.ai, p.aiAmount / 100, s, p.bg > 0 && info.bg && info.bg.found ? lastBgMask : null);    // after the backdrop, so the crop takes its colour from the finished photo
     return { data: main.d, w: main.w, h: main.h, info: info };
   }
 

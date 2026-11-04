@@ -13,7 +13,7 @@ const PRESETS = {
   faded:    { fade: 90, dust: 60, noise: 45, sharp: 40, color: 35 },
   phone:    { fade: 35, dust: 10, noise: 40, sharp: 55, color: 20 },
   lowlight: { fade: 50, dust: 20, noise: 70, sharp: 35, color: 25 },
-  id:       { fade: 100, dust: 30, noise: 55, sharp: 40, color: 10, bg: 1 },   // the only preset that also picks a backdrop
+  id:       { fade: 100, dust: 30, noise: 55, sharp: 40, color: 10, bg: 1, scale: 4, ai: 1 },   // the only preset that also sets a backdrop, a size and the AI face step
 };
 const KEYS = ['fade', 'dust', 'noise', 'sharp', 'color'];
 
@@ -22,6 +22,7 @@ const el = {
   work: $('#r-work'), status: $('#r-status'), cmp: $('#r-cmp'), wait: $('#r-wait'),
   before: $('#r-before'), after: $('#r-after'), faces: $('#r-faces'),
   presets: $('#r-presets'), size: $('#r-size'), download: $('#r-download'), again: $('#r-again'),
+  ai: $('#r-ai'), aiAmt: $('#r-aiAmt'), aiAmtOut: $('#r-aiAmtOut'), aiAmtWrap: $('#r-ai-amt'), aiNote: $('#r-ai-note'), aiFile: $('#r-ai-file'), aiPick: $('#r-ai-pick'),
   bg: $('#r-bg'), bgCustom: $('#r-bg-custom'), bgColor: $('#r-bg-color'), bgNote: $('#r-bg-note'),
   faceNote: $('#r-face-note'), faceMark: $('#r-face-mark'), faceClear: $('#r-face-clear'), steps: $('#r-steps'),
 };
@@ -35,10 +36,12 @@ const S = {
   faces: [],            // { cx, cy, rx, ry } as fractions of the photo's width and height
   marking: false,
   bg: 0,                // 0 keep, 1 sky blue, 2 blue, 3 white, 4 grey, 5 the picked colour
+  aiOn: false, aiFaces: null, aiToken: 0,
 };
 
-const scaleSeg = SX.seg($('#r-scale'), () => { updateSize(); SX.steps(el.steps, 2); });
+const scaleSeg = SX.seg($('#r-scale'), () => { updateSize(); SX.steps(el.steps, 2); requestPreview(); });
 const fmtSeg = SX.seg($('#r-format'));
+const aiSeg = SX.seg($('#r-ai'), (v) => { if (v === '1') startAi(); else stopAi(); SX.steps(el.steps, 2); });
 const faceSeg = SX.seg($('#r-face'), () => { renderFaces(); updateFaceNote(); requestPreview(); });
 const cmp = SX.compare(el.cmp);
 
@@ -103,6 +106,7 @@ async function loadFile(file, opts) {
     el.cmp.style.setProperty('--ar', String(pw / ph));
     cmp.set(50);
 
+    stopAi(true);
     setBg(0, true);
     applyPreset((opts && opts.preset) || 'auto', true);
     faceSeg.set('1');
@@ -149,6 +153,11 @@ function readParams(W, H) {
   const p = { scale: +scaleSeg.value() || 1, faceMode: +faceSeg.value() || 0, faces: faceList(W, H), bg: S.bg };
   if (S.bg === 5) { const v = parseInt(el.bgColor.value.slice(1), 16); p.bgColor = [(v >> 16) & 255, (v >> 8) & 255, v & 255]; }
   KEYS.forEach((k) => { p[k] = +sliders[k].value; });
+  if (S.aiOn && S.aiFaces && S.aiFaces.length) {
+    const k = W / S.w;      // the faces were measured on the full-size photo; this step may be working on a smaller copy
+    p.ai = S.aiFaces.map((f) => ({ size: f.size, data: f.data, M: [f.M[0] / k, f.M[1] / k, f.M[2], f.M[3] / k, f.M[4] / k, f.M[5]] }));
+    p.aiAmount = +el.aiAmt.value;
+  }
   return p;
 }
 function requestPreview() {
@@ -158,7 +167,10 @@ function requestPreview() {
 function runPreview() {
   S.busy = true; S.queued = false; S.pid = ++S.seq;
   showStatus(true);
-  const p = readParams(S.pw, S.ph); p.scale = 1;   // the preview shows the tone and detail work, not the larger size
+  const p = readParams(S.pw, S.ph);
+  // the preview is a copy of at most PREVIEW_SIDE px; a small photo is previewed at the size picked, so what is on screen is what will be saved
+  const want = +scaleSeg.value() || 1, room = PREVIEW_SIDE / Math.max(S.pw, S.ph);
+  p.scale = [8, 4, 2, 1].find((s) => s <= want && s <= room + 1e-6) || 1;
   S.worker.postMessage({ type: 'run', id: S.pid, params: p });
 }
 function onMessage(e) {
@@ -168,6 +180,7 @@ function onMessage(e) {
   if (m.type === 'error') { S.busy = false; showStatus(false); toast('Something went wrong while restoring. Try a smaller photo.', true); return; }
   if (m.type !== 'done') return;
   if (m.id === S.pid) {
+    if (el.after.width !== m.w || el.after.height !== m.h) { el.after.width = m.w; el.after.height = m.h; }
     el.after.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(m.data), m.w, m.h), 0, 0);
     updateBgNote(m.info);
   }
@@ -299,6 +312,11 @@ function applyPreset(name, silent) {
   const v = PRESETS[name]; if (!v) return;
   KEYS.forEach((k) => { sliders[k].value = v[k]; SX.fillRange(sliders[k]); });
   if (v.bg !== undefined) setBg(v.bg, true);
+  if (v.scale) {      // the biggest size the photo allows, up to the one the preset asks for
+    const sz = [8, 4, 2, 1].find((s) => s <= v.scale && s <= S.maxScale + 1e-6) || 1;
+    scaleSeg.set(String(sz)); updateSize();
+  }
+  if (v.ai && !silent) { aiSeg.set('1'); startAi(); }
   syncOutputs(); setPressed(name);
   if (!silent) requestPreview();
 }
@@ -306,6 +324,59 @@ KEYS.forEach((k) => {
   sliders[k].addEventListener('input', () => { outs[k].textContent = sliders[k].value; setPressed(null); SX.steps(el.steps, 2); requestPreview(); });
 });
 $$('button', el.presets).forEach((b) => b.addEventListener('click', () => { applyPreset(b.dataset.preset); SX.steps(el.steps, 2); }));
+
+/* ---------- AI face detail ---------- */
+const AI_HINT = 'Rebuilds the detail a small or blurry face has lost, using a face-restoration network that runs on this device. It can change small features, so compare the result with the original.';
+function setAiNote(t) { el.aiNote.textContent = t; }
+function stopAi(reset) {
+  S.aiToken++; S.aiOn = false;
+  if (reset) { S.aiFaces = null; aiSeg.set('0'); setAiNote(AI_HINT); el.aiPick.hidden = true; }
+  el.aiAmtWrap.hidden = true;
+  if (!reset) { setAiNote(AI_HINT); el.aiPick.hidden = true; requestPreview(); }
+}
+async function startAi() {
+  if (!S.src) return;
+  const token = ++S.aiToken;
+  S.aiOn = true; S.aiFaces = null; el.aiPick.hidden = true;
+  const live = () => token === S.aiToken;
+  try {
+    setAiNote('Loading the face model. The first time this downloads about 76 MB and keeps it for next time.');
+    await SX.ai.load((f) => { if (live()) setAiNote('Downloading the face model, ' + Math.round(f * 100) + '%'); });
+    if (!live()) return;
+    setAiNote('Finding faces');
+    const faces = await SX.ai.detect(S.src);
+    if (!live()) return;
+    if (!faces.length) { stopAi(true); setAiNote('No face was found in this photo, so nothing was added.'); return; }
+    const use = faces.slice(0, 3), out = [];
+    for (let i = 0; i < use.length; i++) {
+      setAiNote('Rebuilding face detail' + (use.length > 1 ? ', face ' + (i + 1) + ' of ' + use.length : ''));
+      out.push(await SX.ai.restoreFace(S.src, use[i]));
+      if (!live()) return;
+    }
+    S.aiFaces = out;
+    el.aiAmtWrap.hidden = false; SX.fillRange(el.aiAmt);
+    setAiNote(out.length + (out.length > 1 ? ' faces' : ' face') + ' rebuilt. Lower the strength to stay closer to the original.');
+    requestPreview();
+  } catch (e) {
+    if (!live()) return;
+    stopAi(true);
+    if (e && e.message === 'model-missing') {
+      setAiNote('The face model could not be loaded here. It is a 76 MB file (gpen_bfr_256.onnx) that sits in the models folder of the project. If you have a copy, choose it and it will be used.');
+      el.aiPick.hidden = false;
+    } else {
+      setAiNote('The face step could not run: ' + ((e && e.message) || 'unknown error') + '. The rest of the restore still works.');
+      el.aiPick.hidden = false;
+    }
+  }
+}
+el.aiAmt.addEventListener('input', () => { el.aiAmtOut.textContent = el.aiAmt.value; SX.fillRange(el.aiAmt); SX.steps(el.steps, 2); requestPreview(); });
+el.aiPick.addEventListener('click', () => el.aiFile.click());
+el.aiFile.addEventListener('change', async () => {
+  const f = el.aiFile.files && el.aiFile.files[0]; el.aiFile.value = '';
+  if (!f) return;
+  try { setAiNote('Reading the model file'); await SX.ai.useFile(f); aiSeg.set('1'); startAi(); }
+  catch (e) { setAiNote('That file could not be used as a face model: ' + ((e && e.message) || 'unknown error')); }
+});
 
 function setScaleLimits() {
   S.maxScale = Math.sqrt(OUT_MAX_PIXELS / (S.w * S.h));
