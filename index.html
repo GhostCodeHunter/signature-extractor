@@ -412,6 +412,11 @@ html.js:not(.is-ready){overflow:hidden}
 
           <div class="r-sliders">
             <div class="field">
+              <div class="row"><label for="r-quality">Quality</label><output id="r-qualityOut" for="r-quality">100%</output></div>
+              <input id="r-quality" type="range" min="0" max="150" step="1" value="100" aria-describedby="r-quality-hint">
+              <p class="hint" id="r-quality-hint">Scales the clean-up, sharpening and AI face below together. 100% keeps them as set, lower is lighter, higher is stronger.</p>
+            </div>
+            <div class="field">
               <div class="row"><label for="r-fade">Fix fading and colour</label><output id="r-fadeOut" for="r-fade">60</output></div>
               <input id="r-fade" type="range" min="0" max="100" step="1" value="60">
             </div>
@@ -490,6 +495,10 @@ html.js:not(.is-ready){overflow:hidden}
           <p class="note-line">Fading fixes assume the photo has real shadows and highlights, so lower it if colours look too strong. High dust and noise settings can soften fine texture.</p>
 
           <div class="r-actions">
+            <div class="field" id="r-jpgq-wrap" hidden>
+              <div class="row"><label for="r-jpgq">JPG quality</label><output id="r-jpgqOut" for="r-jpgq">93</output></div>
+              <input id="r-jpgq" type="range" min="50" max="100" step="1" value="93">
+            </div>
             <div class="row2">
               <span class="label" id="r-fmt-l">Save as</span>
               <div class="seg" id="r-format" role="group" aria-labelledby="r-fmt-l">

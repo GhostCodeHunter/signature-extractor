@@ -40,7 +40,9 @@ const S = {
 };
 
 const scaleSeg = SX.seg($('#r-scale'), () => { updateSize(); SX.steps(el.steps, 2); requestPreview(); });
-const fmtSeg = SX.seg($('#r-format'));
+const jpgq = $('#r-jpgq'), jpgqOut = $('#r-jpgqOut'), jpgqWrap = $('#r-jpgq-wrap');
+const fmtSeg = SX.seg($('#r-format'), (v) => { jpgqWrap.hidden = v !== 'jpg'; if (v === 'jpg') SX.fillRange(jpgq); });
+jpgq.addEventListener('input', () => { jpgqOut.textContent = jpgq.value; SX.fillRange(jpgq); });
 const aiSeg = SX.seg($('#r-ai'), (v) => { if (v === '1') startAi(); else stopAi(); SX.steps(el.steps, 2); });
 const faceSeg = SX.seg($('#r-face'), () => { renderFaces(); updateFaceNote(); requestPreview(); });
 const cmp = SX.compare(el.cmp);
@@ -289,6 +291,22 @@ el.faces.addEventListener('pointerup', () => {
 });
 
 /* ---------- controls ---------- */
+/* Quality is one control over the others: it scales the five sliders and the AI strength from the values they had
+   when it was last at 100%. Moving any of them (or choosing a preset) makes their values the new starting point. */
+const quality = $('#r-quality'), qualityOut = $('#r-qualityOut');
+let qBase = null;
+function qualityReset() {
+  qBase = { ai: +el.aiAmt.value };
+  KEYS.forEach((k) => { qBase[k] = +sliders[k].value; });
+  quality.value = 100; qualityOut.textContent = '100%'; SX.fillRange(quality);
+}
+function qualityApply() {
+  if (!qBase) qualityReset();
+  const f = +quality.value / 100, put = (input, out, v) => { input.value = v; out.textContent = v; SX.fillRange(input); };
+  KEYS.forEach((k) => put(sliders[k], outs[k], Math.max(0, Math.min(100, Math.round(qBase[k] * f)))));
+  put(el.aiAmt, el.aiAmtOut, Math.max(0, Math.min(100, Math.round(qBase.ai * f))));
+  qualityOut.textContent = quality.value + '%';
+}
 function syncOutputs() { KEYS.forEach((k) => { outs[k].textContent = sliders[k].value; }); }
 function setPressed(name) {
   $$('button', el.presets).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.preset === name)));
@@ -317,11 +335,12 @@ function applyPreset(name, silent) {
     scaleSeg.set(String(sz)); updateSize();
   }
   if (v.ai && !silent) { aiSeg.set('1'); startAi(); }
-  syncOutputs(); setPressed(name);
+  el.aiAmt.value = 100; el.aiAmtOut.textContent = '100'; SX.fillRange(el.aiAmt);     // a preset is a fresh start, for the AI strength too
+  syncOutputs(); setPressed(name); qualityReset();
   if (!silent) requestPreview();
 }
 KEYS.forEach((k) => {
-  sliders[k].addEventListener('input', () => { outs[k].textContent = sliders[k].value; setPressed(null); SX.steps(el.steps, 2); requestPreview(); });
+  sliders[k].addEventListener('input', () => { outs[k].textContent = sliders[k].value; setPressed(null); qualityReset(); SX.steps(el.steps, 2); requestPreview(); });
 });
 $$('button', el.presets).forEach((b) => b.addEventListener('click', () => { applyPreset(b.dataset.preset); SX.steps(el.steps, 2); }));
 
@@ -371,7 +390,8 @@ async function startAi() {
     }
   }
 }
-el.aiAmt.addEventListener('input', () => { el.aiAmtOut.textContent = el.aiAmt.value; SX.fillRange(el.aiAmt); SX.steps(el.steps, 2); requestPreview(); });
+el.aiAmt.addEventListener('input', () => { el.aiAmtOut.textContent = el.aiAmt.value; SX.fillRange(el.aiAmt); qualityReset(); SX.steps(el.steps, 2); requestPreview(); });
+quality.addEventListener('input', () => { qualityApply(); setPressed(null); SX.steps(el.steps, 2); requestPreview(); });
 el.aiPick.addEventListener('click', () => el.aiFile.click());
 el.aiFile.addEventListener('change', async () => {
   const f = el.aiFile.files && el.aiFile.files[0]; el.aiFile.value = '';
@@ -420,7 +440,7 @@ el.download.addEventListener('click', async () => {
     const out = document.createElement('canvas'); out.width = result.w; out.height = result.h;
     out.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(result.data), result.w, result.h), 0, 0);
     const jpg = fmtSeg.value() === 'jpg';
-    const blob = await new Promise((r) => out.toBlob(r, jpg ? 'image/jpeg' : 'image/png', 0.93));
+    const blob = await new Promise((r) => out.toBlob(r, jpg ? 'image/jpeg' : 'image/png', +jpgq.value / 100));
     out.width = out.height = 1;
     if (!blob) throw new Error('encode');
     SX.busy(el.download, false);

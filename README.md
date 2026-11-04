@@ -57,6 +57,8 @@ Steps, in order:
 6. **Sharpen**: unsharp mask on brightness only, with a small dead zone so noise is not boosted.
 7. **Background** (optional): see below.
 
+The **Quality** slider at the top of the settings is one control over the others. It scales the five sliders and the AI strength together from the values they had when it was last at 100%: 100% keeps them as set, 0% leaves only the resize, and 150% is a stronger clean-up and sharpening. Moving any single slider, or choosing a preset, makes the new values the starting point and puts Quality back at 100%. When the file is saved as JPG, a separate **JPG quality** slider (50 to 100, default 93) sets the compression of the saved file. PNG is lossless.
+
 Photos larger than 6000 px on the long side, or 24 megapixels, are reduced when opened. The saved file can be up to 36 megapixels, so 8× is only offered for small photos (up to about 0.56 megapixels) and 4× up to about 2.25 megapixels. High dust and noise settings can soften fine texture.
 
 ### ID photo and background
