@@ -432,8 +432,8 @@ function restoreEngineWorker() {
       }
       return out;
     }
-    function bgMap(M) {
-      var rad = Math.max(2, Math.round(Math.max(sw, sh) * 0.1)), res = [new Float32Array(N), new Float32Array(N), new Float32Array(N)], wt = new Float32Array(N), ch = new Float32Array(N);
+    function bgMap(M, radius) {
+      var rad = radius || Math.max(2, Math.round(Math.max(sw, sh) * 0.1)), res = [new Float32Array(N), new Float32Array(N), new Float32Array(N)], wt = new Float32Array(N), ch = new Float32Array(N);
       for (i = 0; i < N; i++) wt[i] = M[i];
       var den = blurF(wt, rad);
       for (c = 0; c < 3; c++) {
@@ -493,6 +493,29 @@ function restoreEngineWorker() {
     var okSeeds = 0; seeds.forEach(function (q) { okSeeds += M2[q]; });
     if (share < 0.06 || okSeeds < seeds.length * 0.5) return { found: false, share: share };
     var B2 = bgMap(M2);
+    // Darker or deeper patches of the same wall beside the backdrop (the neck's shadow, the corner of a frame) are not
+    // close enough to the smooth wall estimate to pass the flood. They are grown in, a few cells at a time, by colour
+    // direction: blue stays blue however dark it is, while skin, hair and clothes point the other way.
+    (function () {
+      var ok = new Uint8Array(N), q, gx, gy, pass, add, k;
+      for (q = 0; q < N; q++) {
+        var m = (S[q * 3] + S[q * 3 + 1] + S[q * 3 + 2]) / 3, em = (B2[0][q] + B2[1][q] + B2[2][q]) / 3;
+        var c0 = S[q * 3] - m, c1 = S[q * 3 + 1] - m, c2 = S[q * 3 + 2] - m, k0 = B2[0][q] - em, k1 = B2[1][q] - em, k2 = B2[2][q] - em;
+        var cn = Math.sqrt(c0 * c0 + c1 * c1 + c2 * c2), kn = Math.sqrt(k0 * k0 + k1 * k1 + k2 * k2);
+        ok[q] = kn > 40 && cn > 0.5 * kn && (c0 * k0 + c1 * k1 + c2 * k2) / (cn * kn) > 0.97 && m > 0.2 * em && m < 1.25 * em ? 1 : 0;
+      }
+      for (pass = 0; pass < 5; pass++) {
+        add = [];
+        for (gy = 0; gy < sh; gy++) for (gx = 0; gx < sw; gx++) {
+          q = gy * sw + gx;
+          if (M2[q] || !ok[q]) continue;
+          if ((gx > 0 && M2[q - 1]) || (gx < sw - 1 && M2[q + 1]) || (gy > 0 && M2[q - sw]) || (gy < sh - 1 && M2[q + sw])) add.push(q);
+        }
+        for (k = 0; k < add.length; k++) M2[add[k]] = 1;
+        if (!add.length) break;
+      }
+    })();
+    var Bl = bgMap(M2, 3);     // the wall right beside the edge: darker than the smooth estimate where the neck shades it
     // kept for the AI face step: the paste must not touch the backdrop
     var Mf = new Float32Array(N); for (i = 0; i < N; i++) Mf[i] = M2[i];
     var Mb = blurF(Mf, 1), Mn = Math.pow(3, 4);
@@ -543,11 +566,19 @@ function restoreEngineWorker() {
           var f0 = Ff[0][q00] * w00 + Ff[0][q01] * w01 + Ff[0][q10] * w10 + Ff[0][q11] * w11;
           var f1 = Ff[1][q00] * w00 + Ff[1][q01] * w01 + Ff[1][q10] * w10 + Ff[1][q11] * w11;
           var f2 = Ff[2][q00] * w00 + Ff[2][q01] * w01 + Ff[2][q10] * w10 + Ff[2][q11] * w11;
-          var vx = e0[0] - f0, vy = e0[1] - f1, vz = e0[2] - f2, vv = vx * vx + vy * vy + vz * vz;
+          var l0 = Bl[0][q00] * w00 + Bl[0][q01] * w01 + Bl[0][q10] * w10 + Bl[0][q11] * w11;
+          var l1 = Bl[1][q00] * w00 + Bl[1][q01] * w01 + Bl[1][q10] * w10 + Bl[1][q11] * w11;
+          var l2 = Bl[2][q00] * w00 + Bl[2][q01] * w01 + Bl[2][q10] * w10 + Bl[2][q11] * w11;
+          var vx = l0 - f0, vy = l1 - f1, vz = l2 - f2, vv = vx * vx + vy * vy + vz * vz;
           if (fv > 0.3 && vv > 2500) {
             var px = d[j2] - f0, py = d[j2 + 1] - f1, pz = d[j2 + 2] - f2, tt = (px * vx + py * vy + pz * vz) / vv;
             var rx = px - tt * vx, ry = py - tt * vy, rz = pz - tt * vz, rr = Math.sqrt(rx * rx + ry * ry + rz * rz);
-            if (tt > 0.1 && rr < 0.2 * Math.sqrt(vv) + 10) { var a2 = clamp((tt - 0.1) / 0.8, 0, 1) * ge; if (a2 > al) al = a2; }
+            if (tt > 0.1 && rr < 0.2 * Math.sqrt(vv) + 10) { var a2 = clamp((tt - 0.1) / 0.8, 0, 1) * ge; if (a2 > al) { al = a2; e0 = [l0, l1, l2]; } }
+          }
+          if (al < 0.6 && fv > 0.3 && ge > 0.1) {      // sharpening leaves a pale rim on the person's side of an edge
+            if (d[j2] > f0 + 26) d[j2] = f0 + 26;
+            if (d[j2 + 1] > f1 + 26) d[j2 + 1] = f1 + 26;
+            if (d[j2 + 2] > f2 + 26) d[j2 + 2] = f2 + 26;
           }
           // a darker or deeper patch of the same wall (the shadow at the shoulders): the same hue, right beside the backdrop.
           // Compared by colour direction after the grey is taken out, so dark hair (no colour) never matches.
