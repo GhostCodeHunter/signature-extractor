@@ -376,6 +376,158 @@ function restoreEngineWorker() {
     }
   }
 
+  /* 8. Background: ID and passport photos need one even colour behind the person. The backdrop is found from the
+        photo's own edges (the colour must reach the border and stay close to a smoothly varying estimate of itself),
+        and only those pixels are made even. Where hair or a shoulder blends into the backdrop, the blend is
+        kept: just the backdrop's share of each pixel is swapped for the new colour. The person is not touched. */
+  var BG_TARGET = [null, [168, 212, 252], [0, 130, 255], [255, 255, 255], [232, 232, 232]];   // keep, sky blue, blue, white, grey
+  var BG_CUSTOM = 5;                   // a picked colour is passed in with it
+  function median(a) { a.sort(function (x, y) { return x - y; }); return a[a.length >> 1]; }
+  function cleanBackground(d, w, h, mode, custom) {
+    var sc = Math.max(1, Math.ceil(Math.max(w, h) / 360)), sw = Math.max(8, Math.floor(w / sc)), sh = Math.max(8, Math.floor(h / sc));
+    var N = sw * sh, S = new Float32Array(N * 3), x, y, i, c, a, b;
+    for (y = 0; y < sh; y++) for (x = 0; x < sw; x++) {
+      var r0 = 0, g0 = 0, b0 = 0, cnt = 0;
+      for (b = 0; b < sc; b++) { var yy = y * sc + b; if (yy >= h) break; for (a = 0; a < sc; a++) { var xx = x * sc + a; if (xx >= w) break; var j = (yy * w + xx) * 4; r0 += d[j]; g0 += d[j + 1]; b0 += d[j + 2]; cnt++; } }
+      i = (y * sw + x) * 3; S[i] = r0 / cnt; S[i + 1] = g0 / cnt; S[i + 2] = b0 / cnt;
+    }
+    // seeds: the top rows, and the sides of the upper part of the photo
+    var seeds = [], bt = Math.max(1, Math.round(sh * 0.04)), bs = Math.max(1, Math.round(sw * 0.04));
+    for (y = 0; y < sh; y++) for (x = 0; x < sw; x++) {
+      if (y < bt || (y < sh * 0.55 && (x < bs || x >= sw - bs))) seeds.push(y * sw + x);
+    }
+    var cr = [], cg = [], cb = [];
+    seeds.forEach(function (q) { cr.push(S[q * 3]); cg.push(S[q * 3 + 1]); cb.push(S[q * 3 + 2]); });
+    var bc = [median(cr), median(cg), median(cb)];
+    var tg = mode === BG_CUSTOM && custom && custom.length === 3 ? custom : BG_TARGET[mode];
+    if (!tg) return { found: false, share: 0 };
+    function dist(q, c0, c1, c2) { var dr = S[q * 3] - c0, dg = S[q * 3 + 1] - c1, db = S[q * 3 + 2] - c2; return Math.sqrt(dr * dr + dg * dg + db * db); }
+    var sd = seeds.map(function (q) { return dist(q, bc[0], bc[1], bc[2]); });
+    var mad = median(sd.slice());
+    var T1 = Math.max(42, 3 * mad);
+    var TS = 11;       // the backdrop changes slowly: a jump this big between neighbouring cells is the edge of the person
+    function step(p, q) { var dr = S[p * 3] - S[q * 3], dg = S[p * 3 + 1] - S[q * 3 + 1], db = S[p * 3 + 2] - S[q * 3 + 2]; return dr * dr + dg * dg + db * db < TS * TS; }
+    function flood(map, thr) {      // pixels close to the estimate, connected to the photo's edge without crossing an edge
+      var M = new Uint8Array(N), stack = [], q;
+      for (var k = 0; k < seeds.length; k++) { q = seeds[k]; if (!M[q] && thr(q)) { M[q] = 1; stack.push(q); } }
+      while (stack.length) {
+        q = stack.pop(); var qx = q % sw, qy = (q / sw) | 0;
+        if (qx > 0 && !M[q - 1] && thr(q - 1) && step(q, q - 1)) { M[q - 1] = 1; stack.push(q - 1); }
+        if (qx < sw - 1 && !M[q + 1] && thr(q + 1) && step(q, q + 1)) { M[q + 1] = 1; stack.push(q + 1); }
+        if (qy > 0 && !M[q - sw] && thr(q - sw) && step(q, q - sw)) { M[q - sw] = 1; stack.push(q - sw); }
+        if (qy < sh - 1 && !M[q + sw] && thr(q + sw) && step(q, q + sw)) { M[q + sw] = 1; stack.push(q + sw); }
+      }
+      return M;
+    }
+    var M1 = flood(null, function (q) { return dist(q, bc[0], bc[1], bc[2]) < T1; });
+    // a smooth estimate of the backdrop colour (it may be lighter on one side): blur the found pixels, normalised
+    function blurF(src, r) {
+      var tmp = new Float32Array(N), out = new Float32Array(N), t, k, sum;
+      var cur = src, nxt = tmp;
+      for (var pass = 0; pass < 2; pass++) {
+        for (y = 0; y < sh; y++) { sum = 0; for (k = -r; k <= r; k++) sum += cur[y * sw + clamp(k, 0, sw - 1)]; for (x = 0; x < sw; x++) { nxt[y * sw + x] = sum; sum += cur[y * sw + clamp(x + r + 1, 0, sw - 1)] - cur[y * sw + clamp(x - r, 0, sw - 1)]; } }
+        for (x = 0; x < sw; x++) { sum = 0; for (k = -r; k <= r; k++) sum += nxt[clamp(k, 0, sh - 1) * sw + x]; for (y = 0; y < sh; y++) { out[y * sw + x] = sum; sum += nxt[clamp(y + r + 1, 0, sh - 1) * sw + x] - nxt[clamp(y - r, 0, sh - 1) * sw + x]; } }
+        cur = out; nxt = pass === 0 ? new Float32Array(N) : tmp;
+      }
+      return out;
+    }
+    function bgMap(M) {
+      var rad = Math.max(2, Math.round(Math.max(sw, sh) * 0.1)), res = [new Float32Array(N), new Float32Array(N), new Float32Array(N)], wt = new Float32Array(N), ch = new Float32Array(N);
+      for (i = 0; i < N; i++) wt[i] = M[i];
+      var den = blurF(wt, rad);
+      for (c = 0; c < 3; c++) {
+        for (i = 0; i < N; i++) ch[i] = M[i] ? S[i * 3 + c] : 0;
+        var num = blurF(ch, rad);
+        for (i = 0; i < N; i++) res[c][i] = den[i] > 1e-3 ? num[i] / den[i] : bc[c];
+      }
+      return res;
+    }
+    var B1 = bgMap(M1);
+    // lower down the photo the person's clothes are what is being told apart from the wall, so the tolerance narrows
+    var M2 = flood(null, function (q) {
+      var dr = S[q * 3] - B1[0][q], dg = S[q * 3 + 1] - B1[1][q], db = S[q * 3 + 2] - B1[2][q], t = ((q / sw) | 0) / sh;
+      return Math.sqrt(dr * dr + dg * dg + db * db) < 40 - 20 * smooth(0.5, 0.7, t);
+    });
+    // smudges and stains: any lump that is not the person (it does not reach the bottom or the lower sides, and it is small) is backdrop too
+    var lab = new Int32Array(N), stk = [], comps = [];
+    for (var s0 = 0; s0 < N; s0++) {
+      if (M2[s0] || lab[s0]) continue;
+      var id = comps.length + 1, size = 0, keep = false;
+      lab[s0] = id; stk.push(s0);
+      while (stk.length) {
+        var q = stk.pop(); size++;
+        var qx = q % sw, qy = (q / sw) | 0;
+        if (qy >= sh - 1 || ((qx === 0 || qx === sw - 1) && qy > sh * 0.45)) keep = true;
+        for (var oy = -1; oy <= 1; oy++) for (var ox = -1; ox <= 1; ox++) {
+          var nx = qx + ox, ny = qy + oy;
+          if (nx < 0 || ny < 0 || nx >= sw || ny >= sh) continue;
+          var nq = ny * sw + nx;
+          if (!M2[nq] && !lab[nq]) { lab[nq] = id; stk.push(nq); }
+        }
+      }
+      comps.push({ id: id, size: size, keep: keep || size >= N * 0.06 });
+    }
+    var drop = new Uint8Array(comps.length + 1);
+    comps.forEach(function (cm) { if (!cm.keep) drop[cm.id] = 1; });
+    for (i = 0; i < N; i++) if (lab[i] && drop[lab[i]]) M2[i] = 1;
+    // thin spikes of "backdrop" that poke into the person (where clothing nearly matches the wall) are not backdrop
+    function morph(M, r, grow) {
+      var T = new Uint8Array(N), O = new Uint8Array(N), k, v;
+      for (y = 0; y < sh; y++) for (x = 0; x < sw; x++) {
+        v = grow ? 0 : 1;
+        for (k = -r; k <= r; k++) { var xx = x + k; if (xx < 0 || xx >= sw) continue; if (grow ? M[y * sw + xx] : !M[y * sw + xx]) { v = grow ? 1 : 0; break; } }
+        T[y * sw + x] = v;
+      }
+      for (y = 0; y < sh; y++) for (x = 0; x < sw; x++) {
+        v = grow ? 0 : 1;
+        for (k = -r; k <= r; k++) { var yy = y + k; if (yy < 0 || yy >= sh) continue; if (grow ? T[yy * sw + x] : !T[yy * sw + x]) { v = grow ? 1 : 0; break; } }
+        O[y * sw + x] = v;
+      }
+      return O;
+    }
+    var opened = morph(morph(M2, 2, false), 2, true);
+    for (i = 0; i < N; i++) M2[i] = opened[i] & M2[i];
+    var share = 0; for (i = 0; i < N; i++) share += M2[i];
+    share /= N;
+    var okSeeds = 0; seeds.forEach(function (q) { okSeeds += M2[q]; });
+    if (share < 0.06 || okSeeds < seeds.length * 0.5) return { found: false, share: share };
+    var B2 = bgMap(M2);
+    // the gate: backdrop pixels grown a little, so blended hair and shoulder edges are included
+    var G = new Float32Array(N), gr = Math.max(1, Math.round(Math.max(sw, sh) * 0.012));
+    for (i = 0; i < N; i++) G[i] = M2[i];
+    var Gb = blurF(G, gr);
+    var norm = Math.pow(2 * gr + 1, 4);
+    var GD = new Float32Array(N);       // deep inside the backdrop: specks and dust there are backdrop too
+    for (i = 0; i < N; i++) { var gv = Gb[i] / norm; G[i] = clamp(gv * 3, 0, 1); GD[i] = clamp((gv - 0.85) / 0.12, 0, 1); }
+    var fxs = (sw - 1) / Math.max(1, w - 1), fys = (sh - 1) / Math.max(1, h - 1);
+    for (y = 0; y < h; y++) {
+      var fy = (y + 0.5) / sc - 0.5; fy = clamp(fy, 0, sh - 1); var y0 = fy | 0, y1 = y0 + 1 < sh ? y0 + 1 : y0, ty = fy - y0;
+      for (x = 0; x < w; x++) {
+        var fx = (x + 0.5) / sc - 0.5; fx = clamp(fx, 0, sw - 1); var x0 = fx | 0, x1 = x0 + 1 < sw ? x0 + 1 : x0, tx = fx - x0;
+        var q00 = y0 * sw + x0, q01 = y0 * sw + x1, q10 = y1 * sw + x0, q11 = y1 * sw + x1;
+        var w00 = (1 - tx) * (1 - ty), w01 = tx * (1 - ty), w10 = (1 - tx) * ty, w11 = tx * ty;
+        var g = G[q00] * w00 + G[q01] * w01 + G[q10] * w10 + G[q11] * w11;
+        if (g <= 0.001) continue;
+        var gd = GD[q00] * w00 + GD[q01] * w01 + GD[q10] * w10 + GD[q11] * w11;
+        var j2 = (y * w + x) * 4, e0 = [0, 0, 0], dd2 = 0;
+        for (c = 0; c < 3; c++) {
+          var bv = B2[c][q00] * w00 + B2[c][q01] * w01 + B2[c][q10] * w10 + B2[c][q11] * w11;
+          e0[c] = bv; var df = d[j2 + c] - bv; dd2 += df * df;
+        }
+        var dist2 = Math.sqrt(dd2), al = 1 - smooth(18, 95, dist2);
+        al *= g;
+        if (gd > al) al = gd;
+        if (al <= 0) continue;
+        var flat = smooth(0.8, 1, al);
+        for (c = 0; c < 3; c++) {
+          var nv = d[j2 + c] + al * (tg[c] - e0[c]);
+          d[j2 + c] = nv + (tg[c] - nv) * flat;
+        }
+      }
+    }
+    return { found: true, share: share, color: tg.map(Math.round) };
+  }
+
   /* the whole pipeline, in the order that gives the cleanest result */
   function run(src, w, h, p, progress, own) {
     var d = own ? src : new Uint8ClampedArray(src);
@@ -407,6 +559,7 @@ function restoreEngineWorker() {
       }
       info.faces = done;
     }
+    if (p.bg > 0) info.bg = cleanBackground(main.d, main.w, main.h, p.bg, p.bgColor);
     return { data: main.d, w: main.w, h: main.h, info: info };
   }
 

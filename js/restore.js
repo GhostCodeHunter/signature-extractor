@@ -13,6 +13,7 @@ const PRESETS = {
   faded:    { fade: 90, dust: 60, noise: 45, sharp: 40, color: 35 },
   phone:    { fade: 35, dust: 10, noise: 40, sharp: 55, color: 20 },
   lowlight: { fade: 50, dust: 20, noise: 70, sharp: 35, color: 25 },
+  id:       { fade: 100, dust: 30, noise: 55, sharp: 40, color: 10, bg: 1 },   // the only preset that also picks a backdrop
 };
 const KEYS = ['fade', 'dust', 'noise', 'sharp', 'color'];
 
@@ -21,6 +22,7 @@ const el = {
   work: $('#r-work'), status: $('#r-status'), cmp: $('#r-cmp'), wait: $('#r-wait'),
   before: $('#r-before'), after: $('#r-after'), faces: $('#r-faces'),
   presets: $('#r-presets'), size: $('#r-size'), download: $('#r-download'), again: $('#r-again'),
+  bg: $('#r-bg'), bgCustom: $('#r-bg-custom'), bgColor: $('#r-bg-color'), bgNote: $('#r-bg-note'),
   faceNote: $('#r-face-note'), faceMark: $('#r-face-mark'), faceClear: $('#r-face-clear'), steps: $('#r-steps'),
 };
 const sliders = {}, outs = {};
@@ -32,6 +34,7 @@ const S = {
   exporting: false, maxScale: 1, loading: false,
   faces: [],            // { cx, cy, rx, ry } as fractions of the photo's width and height
   marking: false,
+  bg: 0,                // 0 keep, 1 sky blue, 2 blue, 3 white, 4 grey, 5 the picked colour
 };
 
 const scaleSeg = SX.seg($('#r-scale'), () => { updateSize(); SX.steps(el.steps, 2); });
@@ -100,6 +103,7 @@ async function loadFile(file, opts) {
     el.cmp.style.setProperty('--ar', String(pw / ph));
     cmp.set(50);
 
+    setBg(0, true);
     applyPreset((opts && opts.preset) || 'auto', true);
     faceSeg.set('1');
     renderFaces(); updateFaceNote();
@@ -142,7 +146,8 @@ function faceList(W, H) {
   return S.faces.map((f) => ({ cx: f.cx * W, cy: f.cy * H, rx: f.rx * W, ry: f.ry * H }));
 }
 function readParams(W, H) {
-  const p = { scale: +scaleSeg.value() || 1, faceMode: +faceSeg.value() || 0, faces: faceList(W, H) };
+  const p = { scale: +scaleSeg.value() || 1, faceMode: +faceSeg.value() || 0, faces: faceList(W, H), bg: S.bg };
+  if (S.bg === 5) { const v = parseInt(el.bgColor.value.slice(1), 16); p.bgColor = [(v >> 16) & 255, (v >> 8) & 255, v & 255]; }
   KEYS.forEach((k) => { p[k] = +sliders[k].value; });
   return p;
 }
@@ -164,6 +169,7 @@ function onMessage(e) {
   if (m.type !== 'done') return;
   if (m.id === S.pid) {
     el.after.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(m.data), m.w, m.h), 0, 0);
+    updateBgNote(m.info);
   }
   S.busy = false;
   if (S.queued) runPreview(); else showStatus(false);
@@ -274,9 +280,25 @@ function syncOutputs() { KEYS.forEach((k) => { outs[k].textContent = sliders[k].
 function setPressed(name) {
   $$('button', el.presets).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.preset === name)));
 }
+const BG_HINT = 'Swaps an even backdrop for one flat colour, as ID and passport photos need. The person is left as they are.';
+function updateBgNote(info) {
+  const miss = S.bg > 0 && info && info.bg && info.bg.found === false;
+  el.bgNote.textContent = miss ? 'No even backdrop was found along the top and sides, so the background was left as it is.' : BG_HINT;
+}
+function setBg(mode, silent) {
+  S.bg = mode;
+  $$('button[data-bg]', el.bg).forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.bg === mode)));
+  el.bgCustom.classList.toggle('on', mode === 5);
+  if (!silent) requestPreview();
+}
+$$('button[data-bg]', el.bg).forEach((b) => b.addEventListener('click', () => { setBg(+b.dataset.bg); SX.steps(el.steps, 2); }));
+el.bgColor.addEventListener('input', () => { setBg(5); SX.steps(el.steps, 2); });
+el.bgCustom.addEventListener('click', (e) => { if (e.target !== el.bgColor) setBg(5); });
+
 function applyPreset(name, silent) {
   const v = PRESETS[name]; if (!v) return;
   KEYS.forEach((k) => { sliders[k].value = v[k]; SX.fillRange(sliders[k]); });
+  if (v.bg !== undefined) setBg(v.bg, true);
   syncOutputs(); setPressed(name);
   if (!silent) requestPreview();
 }

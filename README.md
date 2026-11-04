@@ -55,8 +55,21 @@ Steps, in order:
 4. **Colour boost**: raises muted colours more than strong ones.
 5. **Enlarge**: Lanczos-3 resampling to 2×, 4× or 8×, done in 2× steps. After each step a soft edge-steepening filter keeps edges from turning into blur, and noise reduction rises a little with the size. This makes edges cleaner and the file bigger. It does not add detail the camera never recorded.
 6. **Sharpen**: unsharp mask on brightness only, with a small dead zone so noise is not boosted.
+7. **Background** (optional): see below.
 
 Photos larger than 6000 px on the long side, or 24 megapixels, are reduced when opened. The saved file can be up to 36 megapixels, so 8× is only offered for small photos (up to about 0.56 megapixels) and 4× up to about 2.25 megapixels. High dust and noise settings can soften fine texture.
+
+### ID photo and background
+
+The **ID photo** preset turns the tone correction up to full and picks **Sky blue** for the background. Other presets leave the background choice alone.
+
+**Background** swaps an even backdrop for one flat colour: Sky blue, Blue, White, Grey or any colour you pick. The backdrop is found from the photo's own edges. A pixel counts as backdrop when it is close to the colour along the top and upper sides, is connected to those edges without crossing a sharp change, and stays close to a smooth estimate of the wall (the wall may be lighter on one side). Lower in the photo the tolerance narrows, because that is where clothing sits. Where hair or a shoulder blends into the wall, the blend is kept and only the wall's share of each pixel is replaced. The person is not changed.
+
+If no even backdrop reaches the top and sides, the page says so and leaves the background as it was. When a garment is nearly the colour of the wall, the edge between them can be a little off. Choose Keep, or a custom colour, in that case.
+
+### What it cannot do
+
+It does not take a text prompt, and it does not use a generative model, so it cannot rebuild eyes, hair or skin texture that a small or blurred photo never captured. A 273 px wide passport photo comes out cleaner, with even colour and a flat backdrop, but not like a sharp studio original. On two test photos (each compared with its own full-resolution original) the result moved from roughly 18 to 21 dB PSNR and from 0.73 to 0.85 SSIM with the background swap, and the face area improved only slightly. Reaching a sharp result needs a face-restoration neural network, which would redraw the face. That can change how a person looks, which is a poor fit for official ID photos, so this tool does not do it.
 
 ### Face protection
 

@@ -181,7 +181,7 @@ html.js:not(.is-ready){overflow:hidden}
         </details>
         <details>
           <summary>Does photo restore use AI?</summary>
-          <p>No. It uses classic image processing: tone correction, speck repair, noise reduction and sharpening. That means it cannot invent detail, and it cannot change who is in a photo.</p>
+          <p>No. It uses classic image processing: tone correction, speck repair, noise reduction and sharpening, plus an optional flat background colour. That means it cannot invent detail, and it cannot change who is in a photo. It takes no text prompt, so a small, blurry passport photo comes out cleaner and with an even backdrop, but not as sharp as a studio original.</p>
         </details>
         <details>
           <summary>Will it change the faces in my photo?</summary>
@@ -359,7 +359,7 @@ html.js:not(.is-ready){overflow:hidden}
     <header class="tool-head">
       <nav class="crumbs" aria-label="Breadcrumb"><a href="#">Home</a><span aria-hidden="true">/</span><span aria-current="page">Restore photo</span></nav>
       <h1 id="res-h1" tabindex="-1">Restore and enhance a photo</h1>
-      <p>Fix faded colour, dust, scratches, noise and softness in an old or low-quality photo, and upscale it if you need a bigger file. This uses classic image processing on your device, so it cleans and sharpens what is in the photo but does not invent detail that was never captured.</p>
+      <p>Fix faded colour, dust, scratches, noise and softness in an old or low-quality photo, give an ID photo an even backdrop, and upscale it if you need a bigger file. This uses classic image processing on your device, so it cleans and sharpens what is in the photo but does not invent detail that was never captured.</p>
       <ol class="stepper" id="r-steps" aria-label="Progress">
         <li aria-current="step"><span class="b"><span class="num">1</span><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span><span class="t">Add photo</span></li>
         <li><span class="b"><span class="num">2</span><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span><span class="t">Adjust</span></li>
@@ -406,6 +406,7 @@ html.js:not(.is-ready){overflow:hidden}
               <button class="chip" type="button" data-preset="faded" aria-pressed="false">Faded print</button>
               <button class="chip" type="button" data-preset="phone" aria-pressed="false">Phone photo</button>
               <button class="chip" type="button" data-preset="lowlight" aria-pressed="false">Low light</button>
+              <button class="chip" type="button" data-preset="id" aria-pressed="false">ID photo</button>
             </div>
           </div>
 
@@ -430,6 +431,19 @@ html.js:not(.is-ready){overflow:hidden}
               <div class="row"><label for="r-color">Colour boost</label><output id="r-colorOut" for="r-color">15</output></div>
               <input id="r-color" type="range" min="0" max="100" step="1" value="15">
             </div>
+          </div>
+
+          <div class="group" id="r-bg-group">
+            <p class="label" id="r-bg-l">Background</p>
+            <div class="chips" id="r-bg" role="group" aria-labelledby="r-bg-l">
+              <button class="chip" type="button" data-bg="0" aria-pressed="true">Keep</button>
+              <button class="chip" type="button" data-bg="1" aria-pressed="false"><span class="dot" style="background:#a8d4fc"></span>Sky blue</button>
+              <button class="chip" type="button" data-bg="2" aria-pressed="false"><span class="dot" style="background:#0082ff"></span>Blue</button>
+              <button class="chip" type="button" data-bg="3" aria-pressed="false"><span class="dot" style="background:#fff"></span>White</button>
+              <button class="chip" type="button" data-bg="4" aria-pressed="false"><span class="dot" style="background:#e8e8e8"></span>Grey</button>
+              <label class="chip" id="r-bg-custom">Custom <input type="color" id="r-bg-color" value="#a8d4fc" aria-label="Custom background colour"></label>
+            </div>
+            <p class="note-line" id="r-bg-note" role="status">Swaps an even backdrop for one flat colour, as ID and passport photos need. The person is left as they are.</p>
           </div>
 
           <div class="group" id="r-faces-group">
