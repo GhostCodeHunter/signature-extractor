@@ -9,17 +9,28 @@ Open `index.html` through any static host (GitHub Pages works), or run `python3 
 
 ## Extract signature
 
-The strokes are lifted from the photo, not redrawn, so the result matches the original signature.
+The strokes come from your photo, so the result keeps the shape, line weight and ink colour of your own signature.
 
 1. Choose, drag in or paste a photo of your signature.
 2. Drag a box around the signature to leave out lines, borders and shadows.
-3. Adjust the result if needed: line thickness, ink sensitivity, edge softness, clean specks, padding and ink colour.
+3. Adjust the result if needed: line thickness, ink sensitivity, edge softness, clean specks, padding and ink colour. **Output** chooses Traced or Pixels, and **Watermark removal** chooses Off, Auto or Strong.
 4. Click a stray mark in the result to erase it.
-5. Download the PNG (transparent or white background), or copy the image.
+5. Download the PNG (transparent or white background) or the SVG, or copy the image.
 
 For a good photo, sign with a dark pen on plain paper, use even light, and hold the camera straight above the page.
 
 How it works: the paper brightness around each pixel is estimated from the photo itself, so shadows cancel out. Each pixel's darkness against that level becomes the stroke opacity, with an automatic threshold between faint and solid ink. Small specks are removed, the pen colour comes from the darkest solid strokes, and line thickness grows or shrinks the strokes using a distance map.
+
+### Traced and Pixels
+
+- **Traced** (default) redraws the strokes as smooth outlines at up to 4× the photo's size, so edges stay crisp when you enlarge the signature. The outline level is picked so that the traced strokes cover the same area as the photo's strokes, which keeps the line weight. Outlines are found with marching squares, simplified, and drawn as curves. The SVG download holds the same outlines as one filled path.
+- **Pixels** keeps the photo's own pixels with a soft edge, at the photo's own size.
+
+### Watermarks
+
+Watermark removal only exists in the signature tool, and only works on marks that differ from the pen. In **Auto** a connected mark is left out when its core is much fainter than the pen, or when its colour is far from the pen colour. Faint or off-colour pixels that touch the signature are also removed when they sit more than a couple of pixels away from solid pen. **Strong** is stricter on both. Pen strokes away from a mark are not changed. If nothing is found, the result is identical to Off.
+
+Limits: a mark in the same colour and darkness as the pen cannot be separated. A heavy mark that crosses the strokes can leave small stubs beside them, and coloured text over the pen can leave small notches. A pen with two colours may lose the second one, so use Off then. Click the leftovers to erase them.
 
 ## Restore photo
 

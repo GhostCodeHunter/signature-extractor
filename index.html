@@ -101,6 +101,8 @@ html.js:not(.is-ready){overflow:hidden}
           <ul>
             <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Shadows and uneven light are cancelled out</li>
             <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Thicken or thin the line, or change the ink colour</li>
+            <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Traced as smooth outlines, with an SVG download</li>
+            <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Watermarks and faint marks are left out</li>
             <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Click a stray mark to erase it</li>
           </ul>
           <div class="card-art checker"><img src="assets/sample-signature.png" alt="A signature extracted as a transparent PNG" width="751" height="376"></div>
@@ -173,6 +175,10 @@ html.js:not(.is-ready){overflow:hidden}
           <p>No. Both tools run in your browser on your device. The photo is never sent to a server, and there is no account.</p>
         </details>
         <details>
+          <summary>How does it handle a watermark on the photo?</summary>
+          <p>With watermark removal on Auto, marks that are fainter than the pen or a different colour from it are left out, and the notice under the controls says how many were found. Pen strokes away from a mark are not changed, but a mark that crosses the pen can leave a small notch. A watermark in the same colour and darkness as the pen cannot be told apart, so use Off, or click the leftovers to erase them.</p>
+        </details>
+        <details>
           <summary>Does photo restore use AI?</summary>
           <p>No. It uses classic image processing: tone correction, speck repair, noise reduction and sharpening. That means it cannot invent detail, and it cannot change who is in a photo.</p>
         </details>
@@ -205,7 +211,7 @@ html.js:not(.is-ready){overflow:hidden}
     <header class="tool-head">
       <nav class="crumbs" aria-label="Breadcrumb"><a href="#">Home</a><span aria-hidden="true">/</span><span aria-current="page">Extract signature</span></nav>
       <h1 id="sig-h1" tabindex="-1">Extract your signature</h1>
-      <p>Upload a photo of your signature and get your own handwriting back as a transparent PNG. The strokes are lifted from the photo, not redrawn, so the result matches the original.</p>
+      <p>Upload a photo of your signature and get your own handwriting back as a transparent PNG. The strokes follow the photo exactly, with the same shape, line weight and ink colour.</p>
       <ol class="stepper" id="s-steps" aria-label="Progress">
         <li aria-current="step"><span class="b"><span class="num">1</span><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span><span class="t">Add photo</span></li>
         <li><span class="b"><span class="num">2</span><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span><span class="t">Select and tune</span></li>
@@ -265,6 +271,7 @@ html.js:not(.is-ready){overflow:hidden}
           <p class="hint">Click any stray mark in the result to erase it. <button class="link" id="undoErase" type="button" hidden>Undo erase</button></p>
           <div class="actions">
             <button class="btn btn-primary" id="download" type="button"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>Download PNG</span></button>
+            <button class="btn" id="svg" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>Download SVG</span></button>
             <button class="btn" id="copy" type="button"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg><span>Copy image</span></button>
           </div>
         </section>
@@ -301,6 +308,27 @@ html.js:not(.is-ready){overflow:hidden}
             <button class="chip" type="button" data-ink="black" aria-pressed="false"><span class="dot" style="background:#111"></span>Black</button>
             <button class="chip" type="button" data-ink="blue" aria-pressed="false"><span class="dot" style="background:#1c3aa8"></span>Blue</button>
             <label class="chip" id="customChip">Custom <input type="color" id="customColor" value="#7a1fa2" aria-label="Custom ink colour"></label>
+          </div>
+        </div>
+      
+        <div class="opts">
+          <div class="opt">
+            <p class="label" id="trLabel">Output</p>
+            <div class="seg" id="trSeg" role="group" aria-labelledby="trLabel">
+              <button type="button" data-v="1" aria-pressed="true">Traced</button>
+              <button type="button" data-v="0" aria-pressed="false">Pixels</button>
+            </div>
+            <p class="note-line">Traced redraws your strokes as smooth outlines at a larger size, with the same shape, line weight and ink colour as the photo. Pixels keeps the photo's own pixels.</p>
+          </div>
+          <div class="opt">
+            <p class="label" id="wmLabel">Watermark removal</p>
+            <div class="seg" id="wmSeg" role="group" aria-labelledby="wmLabel">
+              <button type="button" data-v="0" aria-pressed="false">Off</button>
+              <button type="button" data-v="1" aria-pressed="true">Auto</button>
+              <button type="button" data-v="2" aria-pressed="false">Strong</button>
+            </div>
+            <p class="note-line" id="wmNote" role="status"></p>
+            <p class="note-line">Marks that are lighter or a different colour than the pen are left out. Pen strokes are kept as they are, except where a mark crosses them. A leftover mark can be erased by clicking it in the result.</p>
           </div>
         </div>
       </section>

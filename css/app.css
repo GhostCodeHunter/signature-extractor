@@ -294,6 +294,11 @@ input[type=range]:focus-visible::-moz-range-thumb{outline:2px solid var(--accent
 .btn[aria-pressed=true]{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
 .inline-actions{display:flex;flex-wrap:wrap;align-items:center;gap:4px 16px}
 
+/* ---------- signature: output and watermark options ---------- */
+.opts{display:grid;grid-template-columns:1fr 1fr;gap:16px 32px;margin-top:20px;padding-top:16px;border-top:1px solid var(--line)}
+.opt{display:grid;gap:8px;align-content:start;justify-items:start}
+.opt .label{font-size:14px;line-height:20px;font-weight:500}
+
 /* ---------- landing: stages, faq, closing ---------- */
 .strip{margin-top:40px;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:16px}
 .strip figure{position:relative;border-radius:var(--r-md);overflow:hidden;border:1px solid var(--line);background:var(--raised)}
@@ -356,6 +361,7 @@ input[type=range]:focus-visible::-moz-range-thumb{outline:2px solid var(--accent
 }
 @media (max-width:820px){
   .grid{grid-template-columns:1fr}
+  .opts{grid-template-columns:1fr}
 }
 @media (max-width:560px){
   .wrap{padding:0 16px}

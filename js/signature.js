@@ -15,12 +15,14 @@ const el = {
   sens: $('#sens'), soft: $('#soft'), specks: $('#specks'), pad: $('#pad'), thick: $('#thick'), thickOut: $('#thickOut'),
   sensOut: $('#sensOut'), softOut: $('#softOut'), specksOut: $('#specksOut'), padOut: $('#padOut'),
   customColor: $('#customColor'), customChip: $('#customChip'), origDot: $('#origDot'),
+  svg: $('#svg'), wmNote: $('#wmNote'),
 };
 
 const S = {
   W: 0, H: 0, rgba: null, d: null,
   sel: null, seeds: [], ink: 'original', bg: 'transparent',
   tKey: '', tVal: 60, last: null, url: null, name: 'signature', raf: 0,
+  trace: true, wmMode: 1, wm: null,
 };
 
 /* ---------- loading the photo ---------- */
@@ -74,7 +76,7 @@ async function loadPhoto(file) {
   if (S.url) URL.revokeObjectURL(S.url);
   S.url = url;
   S.name = (file.name || 'signature').replace(/\.[^.]+$/, '').replace(/[^\w\- ]+/g, '').trim() || 'signature';
-  S.sel = null; S.seeds = []; S.tKey = '';
+  S.sel = null; S.seeds = []; S.tKey = ''; S.wm = null;
   el.srcImg.src = url;
   el.sel.hidden = true; el.clearSel.hidden = true; el.undo.hidden = true;
   render();
@@ -171,22 +173,25 @@ function cropRect() {
   return { x, y, w, h };
 }
 
-/* Otsu split between faint and solid ink, ignoring paper texture. */
-function autoThreshold(c) {
-  const key = c.x + ',' + c.y + ',' + c.w + ',' + c.h;
+/* Otsu split between faint and solid ink, ignoring paper texture and any
+   watermark marks, so a watermark cannot pull the line weight around. */
+function autoThreshold(c, wm) {
+  const key = wm.key;
   if (S.tKey === key) return S.tVal;
   const hist = new Uint32Array(256);
-  const D = S.d, W = S.W;
+  const D = S.d, W = S.W, mask = wm.skip;
   for (let y = 0; y < c.h; y++) {
-    let i = (c.y + y) * W + c.x;
-    for (let x = 0; x < c.w; x++) hist[D[i++]]++;
+    let i = (c.y + y) * W + c.x, m = y * c.w;
+    if (mask) { for (let x = 0; x < c.w; x++, i++, m++) if (!mask[m]) hist[D[i]]++; }
+    else for (let x = 0; x < c.w; x++) hist[D[i++]]++;
   }
+  const t0 = NOISE_FLOOR;
   let total = 0, sum = 0;
-  for (let t = NOISE_FLOOR; t < 256; t++) { total += hist[t]; sum += t * hist[t]; }
+  for (let t = t0; t < 256; t++) { total += hist[t]; sum += t * hist[t]; }
   let T = 60;
   if (total >= 40) {
     let wB = 0, sumB = 0, best = -1;
-    for (let t = NOISE_FLOOR; t < 256; t++) {
+    for (let t = t0; t < 256; t++) {
       wB += hist[t];
       if (!wB) continue;
       const wF = total - wB;
@@ -197,8 +202,174 @@ function autoThreshold(c) {
       if (v > best) { best = v; T = t; }
     }
   }
-  S.tKey = key; S.tVal = clamp(T, 20, 170);
+  S.tKey = key; S.tVal = clamp(T, wm.ref ? Math.max(20, Math.round(wm.ref * 0.3)) : 20, 170);
   return S.tVal;
+}
+
+/* ---------- watermark removal ---------- */
+/* A watermark, stamp or camera overlay is not pen: it is usually lighter than the
+   pen, or another colour. Each connected mark is compared with the pen's own
+   darkness and colour, and the marks that do not match are left out. A mark that
+   matches the pen is never touched, so the strokes keep their shape and weight.
+   Returns a mask over the crop (1 = not signature). */
+function detectWatermark(c, mode) {
+  const key = c.x + ',' + c.y + ',' + c.w + ',' + c.h + '|' + mode;
+  if (S.wm && S.wm.key === key) return S.wm;
+  const out = { key, mask: null, skip: null, removed: 0, ref: 0 };
+  S.wm = out;
+  if (!mode) return out;
+  const { w, h } = c, W = S.W, D = S.d, P = S.rgba, n = w * h;
+
+  // how dark is the pen: the darkness reached by the darkest half percent of marked pixels
+  const hist = new Uint32Array(256);
+  let tot = 0;
+  for (let y = 0; y < h; y++) {
+    let i = (c.y + y) * W + c.x;
+    for (let x = 0; x < w; x++) { const v = D[i++]; if (v > NOISE_FLOOR) { hist[v]++; tot++; } }
+  }
+  if (tot < 80) return out;
+  const want = Math.max(60, Math.round(tot * 0.005));
+  let acc = 0, ref = 255;
+  for (let v = 255; v > NOISE_FLOOR; v--) { acc += hist[v]; if (acc >= want) { ref = v; break; } }
+  if (ref < 60) return out;
+  out.ref = ref;
+
+  // the pen's colour, as chromaticity so brightness does not matter
+  let pr = 0, pg = 0, pb = 0, pn = 0;
+  for (let y = 0; y < h; y++) {
+    let i = (c.y + y) * W + c.x;
+    for (let x = 0; x < w; x++, i++) {
+      if (D[i] >= ref) { const j = i * 4; pr += P[j]; pg += P[j + 1]; pb += P[j + 2]; pn++; }
+    }
+  }
+  const ps = pr + pg + pb + 1;
+  const pcx = pr / ps, pcy = pg / ps;
+
+  const floor = Math.max(NOISE_FLOOR + 2, Math.round(ref * 0.15));
+  const kw = mode === 2 ? 0.5 : 0.4;       // a mark whose core is lighter than this share of the pen is a watermark
+  const ht = mode === 2 ? 0.13 : 0.16;     // or one whose colour is this far from the pen's
+  const bigMark = 60 * Math.pow(Math.max(w, h) / 1000, 2);   // marks smaller than this are specks, not worth reporting
+  const seen = new Uint8Array(n), q = new Int32Array(n), mask = new Uint8Array(n), skip = new Uint8Array(n);
+  const hc = new Uint32Array(256), hr = new Float64Array(256), hg = new Float64Array(256), hb = new Float64Array(256);
+  let removed = 0;
+  let kx0 = w, ky0 = h, kx1 = -1, ky1 = -1;
+
+  for (let s0 = 0; s0 < n; s0++) {
+    if (seen[s0]) continue;
+    const sy = (s0 / w) | 0, sx = s0 - sy * w;
+    if (D[(c.y + sy) * W + c.x + sx] < floor) continue;
+    let head = 0, tail = 0;
+    q[tail++] = s0; seen[s0] = 1;
+    hc.fill(0); hr.fill(0); hg.fill(0); hb.fill(0);
+    let cx0 = w, cy0 = h, cx1 = -1, cy1 = -1;
+    while (head < tail) {
+      const p = q[head++];
+      const py = (p / w) | 0, px = p - py * w;
+      const gi = (c.y + py) * W + c.x + px, v = D[gi], j = gi * 4;
+      hc[v]++; hr[v] += P[j]; hg[v] += P[j + 1]; hb[v] += P[j + 2];
+      if (px < cx0) cx0 = px; if (px > cx1) cx1 = px; if (py < cy0) cy0 = py; if (py > cy1) cy1 = py;
+      for (let dy = -1; dy <= 1; dy++) {
+        const ny = py + dy; if (ny < 0 || ny >= h) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = px + dx; if (nx < 0 || nx >= w) continue;
+          const nn = ny * w + nx;
+          if (seen[nn] || D[(c.y + ny) * W + c.x + nx] < floor) continue;
+          seen[nn] = 1; q[tail++] = nn;
+        }
+      }
+    }
+    // darkness of the mark's core: the mean of its darkest tenth
+    let take = Math.max(1, Math.round(tail * 0.1)), got = 0, sum = 0;
+    for (let v = 255; v >= 0 && got < take; v--) {
+      const k = Math.min(hc[v], take - got);
+      got += k; sum += k * v;
+    }
+    const core = sum / got;
+    // colour of its darkest quarter
+    take = Math.max(1, Math.round(tail * 0.25)); got = 0;
+    let rr = 0, gg = 0, bb = 0;
+    for (let v = 255; v >= 0 && got < take; v--) {
+      if (!hc[v]) continue;
+      const f = Math.min(1, (take - got) / hc[v]);
+      rr += hr[v] * f; gg += hg[v] * f; bb += hb[v] * f; got += hc[v] * f;
+    }
+    const cs = rr + gg + bb + 1;
+    const dist = Math.hypot(rr / cs - pcx, gg / cs - pcy);
+    const faint = core < kw * ref;
+    const offHue = tail >= 40 && dist > ht;
+    if (faint || offHue) {
+      const big = tail >= bigMark;
+      if (big) removed++;
+      for (let k = 0; k < tail; k++) {
+        const p = q[k], py = (p / w) | 0, px = p - py * w;
+        if (big) skip[p] = 1;
+        for (let dy = -1; dy <= 1; dy++) {
+          const ny = py + dy; if (ny < 0 || ny >= h) continue;
+          for (let dx = -1; dx <= 1; dx++) { const nx = px + dx; if (nx >= 0 && nx < w) mask[ny * w + nx] = 1; }
+        }
+      }
+    } else {
+      if (cx0 < kx0) kx0 = cx0; if (cy0 < ky0) ky0 = cy0; if (cx1 > kx1) kx1 = cx1; if (cy1 > ky1) ky1 = cy1;
+    }
+  }
+
+  // a watermark that crosses the signature joins it into one mark. Its faint pixels
+  // far from any pen-dark pixel are watermark, so they are left out too.
+  let fringe = 0;
+  if (kx1 >= 0) {
+    const bw = kx1 - kx0 + 1, bh = ky1 - ky0 + 1;
+    const solid = new Uint8Array(bw * bh);
+    const sol = Math.round(ref * (mode === 2 ? 0.62 : 0.5));
+    for (let y = 0; y < bh; y++) {
+      let gi = (c.y + ky0 + y) * W + c.x + kx0;
+      for (let x = 0; x < bw; x++, gi++) if (D[gi] >= sol && !mask[(ky0 + y) * w + kx0 + x]) solid[y * bw + x] = 1;
+    }
+    // a coloured mark that crosses the signature: pixels dark enough to judge whose colour is far
+    // from anything between the pen's colour and neutral paper
+    const hp = mode === 2 ? 0.09 : 0.12, hmin = Math.round(ref * 0.35);
+    const vx = 1 / 3 - pcx, vy = 1 / 3 - pcy, vl = vx * vx + vy * vy;
+    const hue = new Uint8Array(bw * bh);
+    for (let y = 0; y < bh; y++) {
+      let gi = (c.y + ky0 + y) * W + c.x + kx0;
+      for (let x = 0; x < bw; x++, gi++) {
+        if (D[gi] < hmin || mask[(ky0 + y) * w + kx0 + x]) continue;
+        const j = gi * 4, sm = P[j] + P[j + 1] + P[j + 2] + 1;
+        const cx = P[j] / sm, cy = P[j + 1] / sm;
+        let t = vl > 1e-6 ? ((cx - pcx) * vx + (cy - pcy) * vy) / vl : 0;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        if (Math.hypot(cx - (pcx + t * vx), cy - (pcy + t * vy)) > hp) hue[y * bw + x] = 1;
+      }
+    }
+    for (let y = 1; y < bh - 1; y++) {
+      for (let x = 1; x < bw - 1; x++) {
+        if (!hue[y * bw + x]) continue;
+        let k = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) k += hue[(y + dy) * bw + x + dx];
+        if (k < 5) continue;       // a stray pixel, not a coloured mark
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const m = (ky0 + y + dy) * w + kx0 + x + dx;
+          if (!mask[m]) { mask[m] = 1; skip[m] = 1; fringe++; }
+        }
+      }
+    }
+    for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) if (mask[(ky0 + y) * w + kx0 + x]) solid[y * bw + x] = 0;
+    const d2 = edtSq(solid, bw, bh);
+    const reach = Math.max(mode === 2 ? 2 : 3, Math.round((mode === 2 ? 0.003 : 0.005) * Math.max(w, h)));
+    const r2 = reach * reach;
+    for (let y = 0; y < bh; y++) {
+      let gi = (c.y + ky0 + y) * W + c.x + kx0;
+      for (let x = 0; x < bw; x++, gi++) {
+        const m = (ky0 + y) * w + kx0 + x;
+        if (!solid[y * bw + x] && !mask[m] && D[gi] >= floor && d2[y * bw + x] > r2) { mask[m] = 1; skip[m] = 1; fringe++; }
+      }
+    }
+  }
+
+  out.mask = mask;
+  // leave the histogram alone unless a real watermark was found, so a clean photo gives the same line weight as with removal off
+  out.skip = removed || fringe > bigMark * 4 ? skip : null;
+  out.removed = removed + (fringe > bigMark * 4 ? 1 : 0);
+  return out;
 }
 
 /* Drop connected blobs that are too small to be handwriting, and any blob
@@ -298,6 +469,127 @@ function thicken(R, w, h, r) {
   return B;
 }
 
+/* ---------- trace: redraw the strokes as smooth outlines ---------- */
+/* The stroke coverage is turned into closed outlines (marching squares at 40% coverage,
+   which keeps the pen's own line weight), thinned to the points that matter and joined
+   with smooth curves. The outlines are then drawn at a larger size, so edges are crisp
+   instead of made of photo pixels. */
+
+function simplifyLoop(pts, eps) {
+  const n = pts.length / 2;
+  if (n < 8) return pts;
+  // split the loop at its two farthest-apart points so each half is an open line
+  let far = 0, fd = -1;
+  for (let k = 1; k < n; k++) {
+    const dx = pts[2 * k] - pts[0], dy = pts[2 * k + 1] - pts[1], d = dx * dx + dy * dy;
+    if (d > fd) { fd = d; far = k; }
+  }
+  const keep = new Uint8Array(n + 1);
+  keep[0] = 1; keep[far] = 1; keep[n] = 1;
+  const X = (k) => pts[2 * (k % n)], Y = (k) => pts[2 * (k % n) + 1];
+  const stack = [[0, far], [far, n]];
+  while (stack.length) {
+    const [a, b] = stack.pop();
+    if (b - a < 2) continue;
+    const ax = X(a), ay = Y(a), bx = X(b), by = Y(b);
+    const dx = bx - ax, dy = by - ay, len = Math.hypot(dx, dy) || 1e-9;
+    let md = -1, mi = -1;
+    for (let k = a + 1; k < b; k++) {
+      const d = Math.abs(dx * (ay - Y(k)) - (ax - X(k)) * dy) / len;
+      if (d > md) { md = d; mi = k; }
+    }
+    if (md > eps) { keep[mi] = 1; stack.push([a, mi], [mi, b]); }
+  }
+  const out = [];
+  for (let k = 0; k < n; k++) if (keep[k]) out.push(pts[2 * k], pts[2 * k + 1]);
+  return out;
+}
+
+/* F: stroke alpha (0-255) with the given row stride. The box x0,y0,bw,bh is the strokes' tight box.
+   Returns an SVG path in output pixels (the box plus pad on every side), or null. */
+function traceOutline(F, stride, x0, y0, bw, bh, pad) {
+  const M = 2, gw = bw + 2 * M, gh = bh + 2 * M;
+  let G = new Float32Array(gw * gh);
+  for (let y = 0; y < bh; y++) {
+    const src = (y0 + y) * stride + x0, dst = (y + M) * gw + M;
+    for (let x = 0; x < bw; x++) G[dst + x] = F[src + x] / 255;
+  }
+  // a very light blur so single-pixel steps do not turn into bumps
+  const a = 0.25, norm = 1 / (1 + 2 * a);
+  const T1 = new Float32Array(G.length);
+  for (let y = 0; y < gh; y++) for (let x = 1; x < gw - 1; x++) { const i = y * gw + x; T1[i] = (G[i - 1] * a + G[i] + G[i + 1] * a) * norm; }
+  for (let y = 1; y < gh - 1; y++) for (let x = 0; x < gw; x++) { const i = y * gw + x; G[i] = (T1[i - gw] * a + T1[i] + T1[i + gw] * a) * norm; }
+
+  // outline level: the coverage at which the outlines enclose as much area as the strokes
+  // had in the photo (blurring spreads thin lines, so a fixed level would make them heavier)
+  const hist = new Uint32Array(257);
+  let target = 0;
+  for (let i = 0; i < G.length; i++) { const v = G[i]; if (v > 0.004) { hist[Math.round(v * 256)]++; target += v; } }
+  let ISO = 0.5, cum = 0;
+  for (let b = 256; b >= 1; b--) { cum += hist[b]; if (cum >= target) { ISO = (b - 0.5) / 256; break; } }
+  ISO = clamp(ISO, 0.28, 0.62);
+
+  const nE = 2 * gw * gh;
+  const nxt = new Int32Array(nE).fill(-1);
+  const ex = new Float32Array(nE), ey = new Float32Array(nE);
+  for (let j = 0; j < gh - 1; j++) {
+    for (let i = 0; i < gw - 1; i++) {
+      const v0 = G[j * gw + i], v1 = G[j * gw + i + 1], v2 = G[(j + 1) * gw + i + 1], v3 = G[(j + 1) * gw + i];
+      const b0 = v0 >= ISO ? 1 : 0, b1 = v1 >= ISO ? 1 : 0, b2 = v2 >= ISO ? 1 : 0, b3 = v3 >= ISO ? 1 : 0;
+      const code = b0 | (b1 << 1) | (b2 << 2) | (b3 << 3);
+      if (code === 0 || code === 15) continue;
+      const Tp = 2 * (j * gw + i), Bt = 2 * ((j + 1) * gw + i), Lf = 2 * (j * gw + i) + 1, Rt = 2 * (j * gw + i + 1) + 1;
+      let t;
+      if (b0 !== b1) { t = (ISO - v0) / (v1 - v0); ex[Tp] = i + t; ey[Tp] = j; }
+      if (b1 !== b2) { t = (ISO - v1) / (v2 - v1); ex[Rt] = i + 1; ey[Rt] = j + t; }
+      if (b3 !== b2) { t = (ISO - v3) / (v2 - v3); ex[Bt] = i + t; ey[Bt] = j + 1; }
+      if (b0 !== b3) { t = (ISO - v0) / (v3 - v0); ex[Lf] = i; ey[Lf] = j + t; }
+      const mid = (v0 + v1 + v2 + v3) / 4 >= ISO;
+      switch (code) {
+        case 1: nxt[Lf] = Tp; break;
+        case 2: nxt[Tp] = Rt; break;
+        case 3: nxt[Lf] = Rt; break;
+        case 4: nxt[Rt] = Bt; break;
+        case 5: if (mid) { nxt[Rt] = Tp; nxt[Lf] = Bt; } else { nxt[Lf] = Tp; nxt[Rt] = Bt; } break;
+        case 6: nxt[Tp] = Bt; break;
+        case 7: nxt[Lf] = Bt; break;
+        case 8: nxt[Bt] = Lf; break;
+        case 9: nxt[Bt] = Tp; break;
+        case 10: if (mid) { nxt[Tp] = Lf; nxt[Bt] = Rt; } else { nxt[Tp] = Rt; nxt[Bt] = Lf; } break;
+        case 11: nxt[Bt] = Rt; break;
+        case 12: nxt[Rt] = Lf; break;
+        case 13: nxt[Rt] = Tp; break;
+        case 14: nxt[Tp] = Lf; break;
+      }
+    }
+  }
+
+  const seen = new Uint8Array(nE);
+  const off = pad - M + 0.5;     // grid point i sits at the centre of source pixel i - M
+  const f2 = (v) => (Math.round(v * 100) / 100).toString();
+  const parts = [];
+  for (let s0 = 0; s0 < nE; s0++) {
+    if (nxt[s0] < 0 || seen[s0]) continue;
+    let pts = [], e = s0;
+    while (e >= 0 && !seen[e]) { seen[e] = 1; pts.push(ex[e] + off, ey[e] + off); e = nxt[e]; }
+    if (e !== s0 || pts.length < 6) continue;
+    let area = 0;
+    for (let k = 0, m = pts.length - 2; k < pts.length; m = k, k += 2) area += pts[m] * pts[k + 1] - pts[k] * pts[m + 1];
+    if (Math.abs(area) / 2 < 1.5) continue;              // a speck smaller than a pen dot
+    pts = simplifyLoop(pts, 0.16);
+    const n = pts.length / 2;
+    if (n < 3) continue;
+    // smooth curve through the midpoints of the outline, with the outline points as controls
+    let d = 'M' + f2((pts[2 * n - 2] + pts[0]) / 2) + ' ' + f2((pts[2 * n - 1] + pts[1]) / 2);
+    for (let k = 0; k < n; k++) {
+      const nk = (k + 1) % n;
+      d += 'Q' + f2(pts[2 * k]) + ' ' + f2(pts[2 * k + 1]) + ' ' + f2((pts[2 * k] + pts[2 * nk]) / 2) + ' ' + f2((pts[2 * k + 1] + pts[2 * nk + 1]) / 2);
+    }
+    parts.push(d + 'Z');
+  }
+  return parts.length ? parts.join('') : null;
+}
+
 /* ---------- render ---------- */
 function schedule() {
   if (S.raf) return;
@@ -319,7 +611,8 @@ function render() {
   const c = cropRect();
   const W = S.W, P = S.rgba, D = S.d;
 
-  const T = clamp(autoThreshold(c) * Math.pow(2, -(+el.sens.value) / 50), 6, 220);
+  const wm = detectWatermark(c, S.wmMode);
+  const T = clamp(autoThreshold(c, wm) * Math.pow(2, -(+el.sens.value) / 50), 6, 220);
   const wd = (+el.soft.value) / 100;
   const lo = T * (1 - wd), hi = T * (1 + wd), k = 255 / (hi - lo);
 
@@ -332,6 +625,8 @@ function render() {
       A[di] = v <= lo ? 0 : v >= hi ? 255 : ((v - lo) * k + 0.5) | 0;
     }
   }
+  if (wm.mask) for (let i = 0; i < n; i++) if (wm.mask[i]) A[i] = 0;
+  showWatermarkNote(wm);
 
   const seedSet = new Set();
   for (const s of S.seeds) {
@@ -413,6 +708,28 @@ function render() {
   const bw = tx1 - tx0 + 1, bh = ty1 - ty0 + 1;
   const pad = Math.round((+el.pad.value / 100) * Math.max(bw, bh));
   const outW = bw + pad * 2, outH = bh + pad * 2;
+  const info = { hasInk: true, A, c, bx0: ox + tx0, by0: oy + ty0, pad, outW, outH, grow: Math.max(0, Math.ceil(rpx)), zoom: 1, svg: null };
+
+  if (S.trace) {
+    const d = traceOutline(F, stride, tx0, ty0, bw, bh, pad);
+    if (d) {
+      const z = clamp(Math.round(2400 / Math.max(outW, outH)), 1, 4);
+      el.out.width = Math.round(outW * z); el.out.height = Math.round(outH * z);
+      const tctx = el.out.getContext('2d');
+      tctx.clearRect(0, 0, el.out.width, el.out.height);
+      tctx.save();
+      tctx.scale(z, z);
+      tctx.fillStyle = 'rgb(' + ir + ',' + ig + ',' + ib + ')';
+      tctx.fill(new Path2D(d), 'evenodd');
+      tctx.restore();
+      info.zoom = z;
+      info.svg = { d, w: outW, h: outH, rgb: [ir, ig, ib] };
+      S.last = info;
+      el.svg.hidden = false;
+      return;
+    }
+  }
+  el.svg.hidden = true;
   el.out.width = outW; el.out.height = outH;
   const ctx = el.out.getContext('2d');
   const img = ctx.createImageData(outW, outH);
@@ -427,7 +744,7 @@ function render() {
   }
   ctx.putImageData(img, 0, 0);
   // A and c stay at the strokes' original thickness so a click can find the mark it points at
-  S.last = { hasInk: true, A, c, bx0: ox + tx0, by0: oy + ty0, pad, outW, outH, grow: Math.max(0, Math.ceil(rpx)) };
+  S.last = info;
 }
 
 function showEmpty(msg) {
@@ -436,7 +753,16 @@ function showEmpty(msg) {
   el.out.hidden = true;
   el.undo.hidden = S.seeds.length === 0;
   el.out.width = 1; el.out.height = 1;
+  el.svg.hidden = true;
   S.last = { hasInk: false };
+}
+
+function showWatermarkNote(wm) {
+  if (!S.wmMode) { el.wmNote.textContent = ''; return; }
+  const n = wm.removed;
+  el.wmNote.textContent = n
+    ? 'Removed ' + n + (n === 1 ? ' mark' : ' marks') + ' that did not look like pen. Check the edges where a mark crossed the signature.'
+    : (S.wmMode === 2 ? 'Nothing found that is lighter or a different colour than the pen.' : 'No watermark found. Try Strong if marks are still there.');
 }
 
 /* ---------- selecting the signature on the photo ---------- */
@@ -491,7 +817,8 @@ el.out.addEventListener('click', (e) => {
   const L = S.last;
   if (!L || !L.hasInk) return;
   const r = el.out.getBoundingClientRect();
-  const sx = el.out.width / r.width, sy = el.out.height / r.height;
+  const z = L.zoom || 1;
+  const sx = el.out.width / r.width / z, sy = el.out.height / r.height / z;
   const fx = Math.round((e.clientX - r.left) * sx - L.pad + L.bx0);
   const fy = Math.round((e.clientY - r.top) * sy - L.pad + L.by0);
   const rad = Math.ceil(12 * sx) + L.grow;
@@ -532,6 +859,8 @@ function setInk(mode) {
 document.querySelectorAll('button[data-ink]').forEach((b) => b.addEventListener('click', () => setInk(b.dataset.ink)));
 el.customColor.addEventListener('input', () => setInk('custom'));
 el.customChip.addEventListener('click', (e) => { if (e.target !== el.customColor) { setInk('custom'); } });
+const traceSeg = SX.seg($('#trSeg'), (v) => { S.trace = v === '1'; schedule(); });
+const wmSeg = SX.seg($('#wmSeg'), (v) => { S.wmMode = +v; schedule(); });
 const bgSeg = SX.seg($('#bgSeg'), (v) => {
   S.bg = v;
   el.outView.classList.toggle('white', v === 'white');
@@ -563,6 +892,16 @@ el.download.addEventListener('click', async () => {
     SX.busy(el.download, false);
     toast("Couldn't create the PNG. Try again.", true);
   }
+});
+el.svg.addEventListener('click', async () => {
+  const L = S.last;
+  if (!L || !L.hasInk || !L.svg) { toast('Turn on Traced output to save an SVG.', true); return; }
+  const v = L.svg, z = L.zoom || 1;
+  const bg = S.bg === 'white' ? '<rect width="' + v.w + '" height="' + v.h + '" fill="#fff"/>' : '';
+  const text = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + v.w + ' ' + v.h + '" width="' + Math.round(v.w * z) + '" height="' + Math.round(v.h * z) + '">' + bg +
+    '<path fill="rgb(' + v.rgb.join(',') + ')" fill-rule="evenodd" d="' + v.d + '"/></svg>';
+  const ok = await SX.saveBlob(new Blob([text], { type: 'image/svg+xml' }), S.name + '-signature.svg');
+  if (ok) SX.flash(el.svg, 'Downloaded');
 });
 if (!(navigator.clipboard && window.ClipboardItem)) el.copy.hidden = true;
 el.copy.addEventListener('click', async () => {
